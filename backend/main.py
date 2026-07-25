@@ -10,15 +10,19 @@ Responsibilities:
 
 from fastapi import FastAPI
 from backend.api import api_router
+from backend.config.settings import settings
+from backend.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Application
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title="Aryntra Tarka",
+    title=settings.app_name,
     description="A clean, modular AI backend framework.",
-    version="0.1.0",
+    version=settings.app_version,
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -28,3 +32,5 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 
 app.include_router(api_router)
+
+logger.info("Aryntra Tarka started. Environment: %s", settings.app_env)

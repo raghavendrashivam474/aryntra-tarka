@@ -201,3 +201,143 @@ Do not optimize prematurely.
 Do not add future features.
 
 A clean foundation enables every future capability.
+
+# Milestones
+
+---
+
+## M1.1 — Project Preparation
+
+### Objective
+
+Prepare the project for the first inference pipeline by creating the module structure required for inference.
+
+### Deliverables
+
+- Create inference package
+- Export package modules
+- Maintain clean project structure
+
+### Definition of Done
+
+- Folder structure created
+- Imports resolve correctly
+- Application starts successfully
+
+### Commit
+
+feat(inference): initialize inference module
+
+---
+
+## M1.2 — Inference Models
+
+### Objective
+
+Create request and response models used by the inference pipeline.
+
+### Deliverables
+
+- InferenceRequest
+- InferenceResponse
+- Validation
+
+### Definition of Done
+
+- Models validate successfully
+- Invalid input rejected
+
+### Commit
+
+feat(inference): add inference models
+
+---
+
+## M1.3 — Inference Service
+
+### Objective
+
+Implement the central inference orchestration service.
+
+### Deliverables
+
+- InferenceService
+- Provider resolution
+- Error handling
+
+### Definition of Done
+
+- Service invokes provider
+- Returns structured response
+
+### Commit
+
+feat(inference): implement inference service
+
+---
+
+## M1.4 — Ollama Provider
+
+### Objective
+
+Implement the first working provider.
+
+### Deliverables
+
+- Ollama provider
+- Request formatting
+- Response parsing
+
+### Definition of Done
+
+- Real model responses returned
+
+### Commit
+
+feat(provider): implement Ollama provider
+
+---
+
+## M1.5 — Inference Endpoint
+
+### Objective
+
+Expose inference through FastAPI.
+
+### Deliverables
+
+- POST endpoint
+- Validation
+- Logging
+
+### Definition of Done
+
+- Client receives AI response
+
+### Commit
+
+feat(api): add inference endpoint
+
+---
+
+## M1.6 — Verification & Documentation
+
+### Objective
+
+Verify Sprint 1 functionality and finalize documentation.
+
+### Deliverables
+
+- Manual testing
+- Documentation updates
+- Sprint summary
+
+### Definition of Done
+
+- Verification complete
+- Repository clean
+- Ready for v0.2.0
+
+### Commit
+
+docs: finalize Sprint 1 documentation

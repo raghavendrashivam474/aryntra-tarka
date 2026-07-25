@@ -4,94 +4,79 @@
 
 ---
 
-# Objective
+## Objective
 
-Build the first complete inference pipeline for Aryntra Tarka.
+Build the first working agent in Aryntra Tarka by introducing the core agent loop, planning, tool execution, and inference capabilities.
 
-Sprint 1 transforms the project from an architectural foundation into a functional AI backend capable of accepting a client request, invoking a language model through the provider abstraction, and returning a validated response.
+By the end of this sprint, Tarka should be capable of accepting a task, deciding how to solve it, executing available tools when necessary, reasoning using an LLM, and returning a structured response.
 
----
-
-# Background
-
-Sprint 0 established the project's foundation:
-
-- Repository structure
-- FastAPI application
-- Configuration management
-- Logging infrastructure
-- Provider abstractions
-- Documentation
-- Verification framework
-
-No AI inference was implemented during Sprint 0.
-
-Sprint 1 introduces the first real interaction with a language model.
+This sprint establishes the foundation upon which future capabilities such as memory, retrieval, multi-agent collaboration, and autonomous workflows will be built.
 
 ---
 
-# Scope
+## Background
 
-## Included
+Modern AI systems are evolving from simple text generation APIs into autonomous agents capable of reasoning, planning, and interacting with external systems.
 
-- Request models
-- Response models
-- Inference service
-- Provider factory integration
-- Ollama provider implementation
-- Basic inference endpoint
-- Input validation
-- Output validation
+Aryntra Tarka aims to provide a modular, provider-agnostic framework for building such intelligent agents.
+
+Sprint 0 established the architectural foundation. Sprint 1 focuses on transforming that foundation into the first demonstrable agent capable of completing real tasks through planning, tool execution, and inference.
+
+---
+
+## Scope
+
+Sprint 1 includes:
+
+- Core Agent abstraction
+- Agent execution loop
+- Task planning
+- Tool Registry
+- Tool execution pipeline
+- Inference integration
+- Ollama provider support
+- Agent API endpoint
+- Basic logging
 - Error handling
-- End-to-end verification
 
 ---
 
-## Explicitly Excluded
+## Out of Scope
 
-- Conversation memory
-- Retrieval
-- Vector search
-- Tool execution
-- Agents
-- Prompt templates
-- Streaming responses
+The following capabilities are intentionally excluded:
+
+- Persistent Memory
+- Retrieval-Augmented Generation (RAG)
+- Multi-Agent Systems
+- Long-term Planning
+- Workflow Graphs
+- Human-in-the-loop
 - Authentication
-- Rate limiting
-- Multi-turn conversations
-
-These capabilities belong to future sprints.
+- Distributed execution
 
 ---
 
 # Architectural Goal
 
 ```
-Client
-    │
-    ▼
-Inference Endpoint
-    │
-    ▼
-Request Validation
-    │
-    ▼
-Inference Service
-    │
-    ▼
-Provider Factory
-    │
-    ▼
-Selected Provider
-    │
-    ▼
-Language Model
-    │
-    ▼
-Response Validation
-    │
-    ▼
-Client Response
+                 Client
+                    │
+                    ▼
+             Agent API Endpoint
+                    │
+                    ▼
+              Agent Runtime
+                    │
+      ┌─────────────┼─────────────┐
+      ▼             ▼             ▼
+ Planner      Tool Registry    Inference
+      │             │             │
+      ▼             ▼             ▼
+ Tool Executor   Available     Ollama Provider
+                 Tools
+                    │
+                    ▼
+               Final Response
 ```
 
 ---
@@ -140,27 +125,26 @@ Sprint 1 continues the architectural principles established during Sprint 0.
 
 # Success Criteria
 
-Sprint 1 will be considered complete when:
+A successful Sprint 1 is achieved when:
 
-- Request models validate correctly
-- Response models validate correctly
-- Inference endpoint is operational
-- Provider factory resolves providers successfully
-- Ollama provider returns real responses
-- Invalid requests return appropriate errors
-- Logging captures inference lifecycle
-- Documentation is updated
-- Verification checklist passes
+- The agent accepts a user task.
+- The planner determines how to execute it.
+- Appropriate tools are invoked when required.
+- The inference engine reasons over the collected information.
+- The agent produces a final structured response.
 
 ---
 
-# Deliverables
+## Deliverables
 
-- Functional inference pipeline
-- First AI response through Tarka
-- Provider abstraction proven in practice
-- Clean API contract
-- Updated project documentation
+- Working agent runtime
+- Planner implementation
+- Tool Registry
+- Tool execution framework
+- Ollama integration
+- REST API endpoint
+- End-to-end demonstration
+- Updated documentation
 
 ---
 
@@ -192,152 +176,378 @@ Sprint 1 is complete when:
 
 ---
 
-# Sprint Philosophy
+## Sprint Philosophy
 
-Build the smallest complete inference pipeline possible.
+Sprint 1 is not about building the most intelligent agent.
 
-Do not optimize prematurely.
+It is about building the smallest complete agent.
 
-Do not add future features.
+Every future capability—including memory, retrieval, workflows, and multi-agent collaboration—should naturally extend from the architecture introduced in this sprint.
 
-A clean foundation enables every future capability.
+This sprint prioritizes completeness of the agent loop over feature richness.
 
 # Milestones
 
 ---
 
-## M1.1 — Project Preparation
+# M1.1 — Project Preparation
 
-### Objective
+## Objective
 
-Prepare the project for the first inference pipeline by creating the module structure required for inference.
+Prepare Aryntra Tarka for the first agent implementation by establishing a clean, scalable, and modular project structure. This milestone focuses entirely on architecture and package organization, ensuring future capabilities can be added without major refactoring.
 
-### Deliverables
+---
 
-- Create inference package
-- Export package modules
-- Maintain clean project structure
+## Background
 
-### Definition of Done
+Sprint 0 established the architectural foundation of Aryntra Tarka. Before implementing any agent logic, the repository must contain a well-organized module structure that clearly separates responsibilities between the API layer, inference engine, providers, planners, tools, and future extensions.
 
-- Folder structure created
-- Imports resolve correctly
-- Application starts successfully
+A clean structure established early reduces technical debt and enables rapid feature development in subsequent sprints.
 
-### Commit
+---
 
+## Scope
+
+### Included
+
+- Create core inference package
+- Create provider package structure
+- Organize package exports
+- Maintain dependency boundaries
+- Ensure project boots successfully
+
+### Excluded
+
+- Business logic
+- Provider implementation
+- API endpoints
+- Agent runtime
+- Tool execution
+
+---
+
+## Deliverables
+
+- Well-organized package structure
+- Exported package modules
+- Import-safe architecture
+- Consistent project organization
+
+---
+
+## Definition of Done
+
+- Folder structure matches architecture
+- All imports resolve successfully
+- Application starts without errors
+- No circular dependencies
+- Project is ready for feature implementation
+
+---
+
+## Commit
+
+```
 feat(inference): initialize inference module
+```
 
 ---
 
-## M1.2 — Inference Models
+# M1.2 — Inference Models
 
-### Objective
+## Objective
 
-Create request and response models used by the inference pipeline.
+Design the request and response models that define the public contract of the inference system. These models should provide strong validation, clear documentation, and a stable interface between clients and the inference engine.
 
-### Deliverables
+---
 
-- InferenceRequest
-- InferenceResponse
-- Validation
+## Background
 
-### Definition of Done
+Every interaction with the inference engine should follow a consistent schema. Establishing request and response models early ensures type safety, predictable validation, and easier API evolution.
 
-- Models validate successfully
-- Invalid input rejected
+---
 
-### Commit
+## Scope
 
+### Included
+
+- InferenceRequest model
+- InferenceResponse model
+- Request validation
+- Response serialization
+- Default values
+- Field documentation
+
+### Excluded
+
+- Provider communication
+- Business logic
+- API endpoints
+
+---
+
+## Deliverables
+
+- Pydantic request models
+- Pydantic response models
+- Validation rules
+- Error-friendly schema
+
+---
+
+## Definition of Done
+
+- Valid requests are accepted
+- Invalid requests are rejected
+- Responses serialize correctly
+- Models generate OpenAPI documentation
+- All model tests pass
+
+---
+
+## Commit
+
+```
 feat(inference): add inference models
+```
 
 ---
 
-## M1.3 — Inference Service
+# M1.3 — Inference Service
 
-### Objective
+## Objective
 
-Implement the central inference orchestration service.
+Implement the central orchestration service responsible for coordinating the complete inference workflow. The service should remain provider-independent and act as the primary entry point for all inference operations.
 
-### Deliverables
+---
+
+## Background
+
+Business logic should never reside inside API endpoints or providers. The inference service acts as the application layer, coordinating providers, handling failures, and producing consistent responses.
+
+---
+
+## Scope
+
+### Included
 
 - InferenceService
-- Provider resolution
-- Error handling
+- Provider selection
+- Request orchestration
+- Response formatting
+- Exception handling
+- Logging hooks
 
-### Definition of Done
+### Excluded
 
-- Service invokes provider
-- Returns structured response
-
-### Commit
-
-feat(inference): implement inference service
+- HTTP endpoints
+- Provider implementation
+- Authentication
 
 ---
 
-## M1.4 — Ollama Provider
+## Deliverables
 
-### Objective
+- Central inference service
+- Provider abstraction integration
+- Structured error handling
+- Logging support
 
-Implement the first working provider.
+---
 
-### Deliverables
+## Definition of Done
+
+- Service accepts validated requests
+- Provider is resolved correctly
+- Responses are returned consistently
+- Exceptions are handled gracefully
+- Service remains provider-agnostic
+
+---
+
+## Commit
+
+```
+feat(inference): implement inference service
+```
+
+---
+
+# M1.4 — Ollama Provider
+
+## Objective
+
+Implement the first production-ready provider by integrating Ollama into the provider abstraction layer. This milestone establishes the communication pattern that future providers will follow.
+
+---
+
+## Background
+
+The provider layer isolates external AI platforms from the core framework. By implementing Ollama first, future providers such as OpenAI, Anthropic, Gemini, or local models can follow the same interface.
+
+---
+
+## Scope
+
+### Included
 
 - Ollama provider
+- HTTP communication
 - Request formatting
 - Response parsing
+- Error handling
+- Timeout handling
 
-### Definition of Done
+### Excluded
 
-- Real model responses returned
+- Multi-provider routing
+- Streaming responses
+- Load balancing
 
-### Commit
+---
 
+## Deliverables
+
+- Working Ollama provider
+- Provider interface implementation
+- Structured response parsing
+- Error-safe communication
+
+---
+
+## Definition of Done
+
+- Provider communicates with Ollama
+- Valid responses are returned
+- Errors are handled gracefully
+- Provider conforms to abstraction layer
+- Real inference succeeds
+
+---
+
+## Commit
+
+```
 feat(provider): implement Ollama provider
+```
 
 ---
 
-## M1.5 — Inference Endpoint
+# M1.5 — Inference API
 
-### Objective
+## Objective
 
-Expose inference through FastAPI.
+Expose inference capabilities through a clean REST API using FastAPI, allowing external applications to interact with Aryntra Tarka through a stable and documented interface.
 
-### Deliverables
+---
 
-- POST endpoint
-- Validation
+## Background
+
+The API layer should remain lightweight, delegating all business logic to the inference service while focusing on validation, routing, and response delivery.
+
+---
+
+## Scope
+
+### Included
+
+- POST /inference endpoint
+- Request validation
+- Response serialization
 - Logging
+- Exception mapping
+- API documentation
 
-### Definition of Done
+### Excluded
 
-- Client receives AI response
-
-### Commit
-
-feat(api): add inference endpoint
+- Authentication
+- Rate limiting
+- Streaming
+- WebSockets
 
 ---
 
-## M1.6 — Verification & Documentation
+## Deliverables
 
-### Objective
+- Functional inference endpoint
+- Automatic OpenAPI documentation
+- Structured API responses
+- Logging integration
 
-Verify Sprint 1 functionality and finalize documentation.
+---
 
-### Deliverables
+## Definition of Done
 
-- Manual testing
+- Endpoint accepts requests
+- Validation works correctly
+- Responses are returned successfully
+- OpenAPI documentation is generated
+- End-to-end inference succeeds
+
+---
+
+## Commit
+
+```
+feat(api): add inference endpoint
+```
+
+---
+
+# M1.6 — Verification & Documentation
+
+## Objective
+
+Validate the complete Sprint 1 implementation, ensure repository quality, and prepare the project for the v0.2.0 release.
+
+---
+
+## Background
+
+Before publishing a release, the entire inference pipeline should be tested, documented, and verified to ensure the sprint objectives have been achieved.
+
+---
+
+## Scope
+
+### Included
+
+- Manual verification
+- Integration testing
 - Documentation updates
 - Sprint summary
+- Repository cleanup
+- Release preparation
 
-### Definition of Done
+### Excluded
 
-- Verification complete
-- Repository clean
-- Ready for v0.2.0
+- New features
+- Architecture changes
+- Performance optimization
 
-### Commit
+---
 
-docs: finalize Sprint 1 documentation
+## Deliverables
+
+- Successful end-to-end verification
+- Updated documentation
+- Sprint summary
+- Release-ready repository
+
+---
+
+## Definition of Done
+
+- Complete inference flow verified
+- Documentation updated
+- Repository is clean
+- All sprint objectives achieved
+- Ready for v0.2.0 release
+
+---
+
+## Commit
+
+```
+docs(sprints): finalize Sprint 1 documentation
+```

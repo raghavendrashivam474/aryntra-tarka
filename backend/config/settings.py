@@ -1,4 +1,4 @@
-"""
+﻿"""
 Centralised configuration for Aryntra Tarka.
 
 Responsibilities:
@@ -22,13 +22,13 @@ class Settings(BaseSettings):
 
     # Application
     app_name: str = "Aryntra Tarka"
-    app_version: str = "0.1.0"
+    app_version: str = "0.2.0"
     app_env: str = "development"
     debug: bool = True
 
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
-    ollama_default_model: str = "llama3"
+    ollama_default_model: str = "llama3.2"
     ollama_default_embedding_model: str = "nomic-embed-text"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}

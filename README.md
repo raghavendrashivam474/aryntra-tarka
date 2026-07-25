@@ -80,20 +80,20 @@ Every implementation decision throughout Sprint 0 should reinforce these princip
 
 This layered architecture allows each subsystem to evolve independently while preserving a clean separation of responsibilities.
 
-Sprint 0 Philosophy
+## Sprint 0 Philosophy
 
 Sprint 0 focuses exclusively on establishing infrastructure.
 
 It intentionally avoids implementing:
 
-Retrieval
-Vector search
-Reasoning
-Planning
-Memory
-Agents
-Tool execution
-Prompt engineering
+- Retrieval
+- Vector search
+- Reasoning
+- Planning
+- Memory
+- Agents
+- Tool execution
+- Prompt engineering
 
 Those capabilities belong to future milestones.
 
@@ -147,7 +147,7 @@ aryntra-tarka/
 ├── .env
 └── .gitattributes
 
-Why This Structure?
+## Why This Structure?
 
 The repository is intentionally organized around architectural boundaries rather than implementation details.
 
@@ -164,7 +164,7 @@ utils contains reusable infrastructure.
 
 This organization minimizes coupling and allows teams to develop independent modules without interfering with one another.
 
-Repository Principles
+## Repository Principles
 
 Every new file added to the project should follow these rules:
 
@@ -176,7 +176,7 @@ Future components should integrate into the existing structure rather than creat
 
 Consistency is significantly more valuable than cleverness.
 
-Foundation Complete
+## Foundation Complete
 
 At this point, the repository has a clear architectural layout and is ready to host executable code.
 
@@ -460,6 +460,7 @@ The application depends on **capabilities**, not **technologies**.
         │                               │
         ▼                               ▼
  Ollama Provider          Local Embedding Provider
+```
 
 The application never communicates with Ollama directly.
 
@@ -467,7 +468,7 @@ Instead, it interacts only with provider interfaces.
 
 Concrete implementations remain isolated behind the provider layer.
 
-Language Model Providers
+## Language Model Providers
 
 Language model providers are responsible for interacting with conversational AI models.
 
@@ -482,7 +483,7 @@ Business rules, reasoning logic, and prompt engineering do not belong inside pro
 
 Providers are responsible only for communication.
 
-Embedding Providers
+## Embedding Providers
 
 Embedding providers generate numerical vector representations of text.
 
@@ -492,7 +493,7 @@ At this stage, providers expose only the capability to generate embeddings.
 
 Vector databases, indexing, and retrieval pipelines remain outside their scope.
 
-Provider Factories
+## Provider Factories
 
 The application should never instantiate providers directly.
 
@@ -507,7 +508,7 @@ Testing becomes significantly easier.
 
 As additional providers are introduced, only the factory requires awareness of the available implementations.
 
-Design Principles
+## Design Principles
 
 Every provider implementation should follow these rules:
 
@@ -519,7 +520,7 @@ Replaceable without affecting application code.
 
 Following these principles ensures that the provider layer remains stable even as underlying AI technologies evolve.
 
-Architectural Benefits
+## Architectural Benefits
 
 By introducing provider abstractions early, Aryntra Tarka gains several long-term advantages:
 
@@ -532,7 +533,7 @@ Consistent application architecture
 
 These benefits become increasingly valuable as the project grows beyond a single provider.
 
-Foundation Complete
+## Foundation Complete
 
 The architectural backbone of Aryntra Tarka is now complete.
 
@@ -629,12 +630,13 @@ Meeting these requirements confirms that the project is ready for feature develo
               └──────────────┬─────────┘
                              ▼
                     External AI Services
+```
 
 This architecture intentionally separates infrastructure from business logic.
 
 Future modules will integrate into this structure rather than modifying it.
 
-Looking Ahead
+## Looking Ahead
 
 With the architectural foundation complete, future sprints can focus entirely on intelligent capabilities.
 
@@ -648,12 +650,12 @@ Prompt management
 Reasoning engine
 Planning engine
 Memory systems
-Tool execution
+- Tool execution
 Multi-step workflows
 
 Each of these systems will integrate into the architecture established during Sprint 0 without requiring structural redesign.
 
-Project Philosophy
+## Project Philosophy
 
 Aryntra Tarka is being developed with long-term maintainability as a primary objective.
 
@@ -669,7 +671,7 @@ Clean engineering practices
 
 Every future contribution should strengthen these principles rather than compromise them.
 
-Conclusion
+## Conclusion
 
 Sprint 0 marks the completion of the project's foundation.
 

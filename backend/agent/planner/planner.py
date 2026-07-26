@@ -1,22 +1,23 @@
-r"""
+﻿r"""
 agent/planner/planner.py
-Rule-based request planner.
+Intelligent request planner — Sprint 3.15 rewrite.
 
-Converts a user message into a structured ExecutionPlan.
-Rules evaluated in order â€” ALL matching rules are collected.
-Calculator checked BEFORE datetime so "times" routes correctly.
+Replaces the keyword/regex matcher with a full NLP-aware routing layer.
 
-Sprint 3.2 â€” DateTime intent recognition expanded.
-Sprint 3.6 â€” Multi-tool planning. Planner now collects ALL matching
-             rules rather than stopping at the first match.
-             ExecutionPlanStep introduced for per-tool parameters.
-             ExecutionPlan.steps holds the ordered execution list.
-             ExecutionPlan.tool_name / .parameters retained for
-             backward compatibility with Sprint 3.2 / 3.5 tests.
+Responsibilities
+----------------
+  - Detect mathematical intent (including natural language forms)
+  - Normalize math expressions before passing to the calculator
+  - Route weather, search, datetime, filesystem correctly
+  - Collect ALL matching tools for multi-tool plans (Sprint 3.6 contract)
+  - Return ExecutionPlan with identical schema to previous sprints
+    so AgentRuntime, tests, and routes need zero changes
 
-Pattern conventions:
-  "word"    -> whole-word match (\bword\b)
-  "prefix*" -> prefix match (\bprefix\w*)
+Sprint history preserved below for reference:
+  Sprint 3.2  - DateTime intent recognition expanded.
+  Sprint 3.6  - Multi-tool planning.
+  Sprint 3.10 - Implicit calculator trigger.
+  Sprint 3.15 - Full NLP routing, expression normalization, percentage fix.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# ExecutionPlanStep â€” one tool invocation within a plan
+# ExecutionPlanStep  (unchanged from Sprint 3.6 — runtime depends on this)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -43,7 +44,7 @@ class ExecutionPlanStep:
 
 
 # ---------------------------------------------------------------------------
-# ExecutionPlan â€” full plan returned by the Planner
+# ExecutionPlan  (unchanged from Sprint 3.6 — runtime depends on this)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -53,12 +54,9 @@ class ExecutionPlan:
 
     Attributes:
         steps:      Ordered list of tool invocations to execute.
-                    Empty when no tool is needed.
-        tool_name:  First tool name, or None. Retained for backward
-                    compatibility with Sprint 3.2 / 3.5 tests.
-        parameters: First tool parameters, or {}. Retained for
-                    backward compatibility.
-        reasoning:  Human-readable explanation of the planning decision.
+        tool_name:  First tool name, or None. (backward compat)
+        parameters: First tool parameters, or {}. (backward compat)
+        reasoning:  Human-readable explanation.
     """
 
     steps:      list[ExecutionPlanStep] = field(default_factory=list)
@@ -68,182 +66,251 @@ class ExecutionPlan:
 
 
 # ---------------------------------------------------------------------------
-# Math word normalisation
+# Expression normalizer import
 # ---------------------------------------------------------------------------
 
-# Map English math words to symbolic operators.
-# Longer phrases first so multi-word forms win over single words.
-_WORD_TO_OP = [
-    ("multiplied by", "*"),
-    ("multiply by",   "*"),
-    ("divided by",    "/"),
-    ("divide by",     "/"),
-    ("added to",      "+"),
-    ("power of",      "**"),
-    ("raised to",     "**"),
-    ("to the power",  "**"),
-    ("plus",  "+"),
-    ("minus", "-"),
-    ("times", "*"),
-    ("over",  "/"),
-    ("modulo", "%"),
-    ("mod",    "%"),
-]
-
-
-def _normalise_math_words(text: str) -> str:
-    """Convert English math words to symbols. Case-insensitive."""
-    result = text.lower()
-    for phrase, symbol in _WORD_TO_OP:
-        pattern = r"\b" + re.escape(phrase) + r"\b"
-        result = re.sub(pattern, f" {symbol} ", result)
-    return result
-
-
-def _extract_expression(message: str) -> dict[str, Any]:
-    """
-    Extract a mathematical expression from the message.
-
-    Steps:
-      1. Replace unicode math symbols with ASCII equivalents.
-      2. Convert English math words to symbols.
-      3. Extract the longest run of digits, spaces, and operators.
-    """
-    cleaned = (
-        message
-        .replace("\u00d7", "*")  # multiplication sign
-        .replace("\u00f7", "/")  # division sign
-        .replace("^", "**")
+try:
+    from backend.planner.normalizers.expression_normalizer import normalize_expression
+    _NORMALIZER_AVAILABLE = True
+except ImportError:
+    _NORMALIZER_AVAILABLE = False
+    logger.warning(
+        "[Planner] Expression normalizer not found — "
+        "raw expressions will be passed to calculator."
     )
 
-    normalised = _normalise_math_words(cleaned)
 
-    # Extract runs of digits and operators (with spaces).
-    # Must start and end with a digit or paren.
-    pattern = r"[\d(][\d\s()+\-*/%.]*[\d)]"
-    matches = re.findall(pattern, normalised)
-
-    if matches:
-        expression = max(matches, key=len).strip()
-        expression = re.sub(r"\s+", " ", expression)
-        return {"expression": expression}
-
-    digits = re.search(r"\d+", normalised)
-    if digits:
-        return {"expression": digits.group()}
-
-    return {"expression": message}
+def _normalize(text: str) -> str:
+    """Normalize a math expression if the normalizer is available."""
+    if _NORMALIZER_AVAILABLE:
+        try:
+            return normalize_expression(text)
+        except Exception as exc:
+            logger.warning("[Planner] Normalization failed: %s", exc)
+    return text
 
 
-def _extract_path(message: str) -> dict[str, Any]:
-    """Extract a path only if it looks like a real path."""
-    path_match = re.search(
-        r"(?:in|at|of|inside)\s+([./~\\][\w./\\-]*)",
-        message,
-    )
-    if path_match:
-        return {"path": path_match.group(1)}
-    return {"path": "."}
+# ---------------------------------------------------------------------------
+# Math intent detection
+# ---------------------------------------------------------------------------
+
+# Explicit math keywords that always signal calculator intent
+_MATH_KEYWORDS = re.compile(
+    r"""
+    \bcalculat\w*\b   |   # calculate, calculation
+    \bcomput\w*\b     |   # compute, computation
+    \bsolv\w*\b       |   # solve, solving
+    \bevaluat\w*\b    |   # evaluate
+    \barithmet\w*\b   |   # arithmetic
+    \bmath\w*\b       |   # math, maths
+    \bsqrt\b          |   # sqrt
+    \bsquare\s+root\b |   # square root
+    \bfraction\b      |   # fraction
+    \bpercentage?\b   |   # percent, percentage
+    \bpercent\b       |   # percent
+    \bhalf\b          |   # half
+    \bthird\b         |   # third
+    \bquarter\b       |   # quarter
+    \bfourth\b        |   # fourth
+    \braised\b        |   # raised to the power
+    \bpower\b         |   # power of
+    \bexponent\b      |   # exponent
+    \bmodulo?\b       |   # mod, modulo
+    \bfactor\b        |   # factor
+    \bproduct\b       |   # product of
+    \bquotient\b      |   # quotient
+    \bsum\s+of\b      |   # sum of
+    \bdifference\b        # difference
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+# Natural language number words
+_NUMBER_WORDS = re.compile(
+    r"\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|"
+    r"eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|"
+    r"eighty|ninety|hundred|thousand)\b",
+    re.IGNORECASE,
+)
+
+# Arithmetic operator words
+_OPERATOR_WORDS = re.compile(
+    r"\b(plus|minus|times|multiplied\s+by|divided\s+by|over|"
+    r"added\s+to|subtract\w*|mod\b|modulo)\b",
+    re.IGNORECASE,
+)
+
+# Symbolic operators
+_SYMBOLIC_OPS = re.compile(r"[+\-*/%^]")
+
+# Percentage pattern  — "15% of 340" or "15 percent of 340"
+_PERCENTAGE_OF = re.compile(
+    r"\d+\s*(?:%|percent)\s+of\s+\d+",
+    re.IGNORECASE,
+)
+
+# Fraction-of pattern — "half of 98", "a third of 270"
+_FRACTION_OF = re.compile(
+    r"\b(?:a\s+)?(?:half|third|quarter|fourth)\s+of\s+\d+",
+    re.IGNORECASE,
+)
+
+# Power pattern — "2 raised to the power of 8", "2 to the power 8"
+_POWER_PATTERN = re.compile(
+    r"\d+\s+(?:raised\s+to|to\s+the)\s+(?:the\s+)?power",
+    re.IGNORECASE,
+)
+
+# Square root pattern
+_SQRT_PATTERN = re.compile(
+    r"(?:square\s+root|sqrt)\s+of\s+\d+",
+    re.IGNORECASE,
+)
 
 
-def _matches(patterns: list, text: str) -> bool:
+def _is_math_intent(text: str) -> bool:
     """
-    Return True if any pattern matches in text.
+    Return True if the message contains mathematical intent.
 
-    Pattern conventions:
-      "word"     -> whole-word match
-      "prefix*"  -> word starting with prefix (any suffix)
+    Detects:
+      - Explicit math keywords
+      - Digits combined with operators (symbol or word)
+      - Percentage-of patterns
+      - Fraction-of patterns
+      - Power patterns
+      - Square root patterns
+      - Number words combined with operator words
     """
-    for pattern in patterns:
-        if pattern.endswith("*"):
-            prefix = re.escape(pattern[:-1])
-            regex = r"\b" + prefix + r"\w*"
-        else:
-            regex = r"\b" + re.escape(pattern) + r"\b"
+    t = text.lower()
 
-        if re.search(regex, text):
-            return True
+    if _MATH_KEYWORDS.search(t):
+        return True
+
+    if _PERCENTAGE_OF.search(t):
+        return True
+
+    if _FRACTION_OF.search(t):
+        return True
+
+    if _POWER_PATTERN.search(t):
+        return True
+
+    if _SQRT_PATTERN.search(t):
+        return True
+
+    has_digit    = bool(re.search(r"\d", t))
+    has_sym_op   = bool(_SYMBOLIC_OPS.search(t))
+    has_word_op  = bool(_OPERATOR_WORDS.search(t))
+    has_num_word = bool(_NUMBER_WORDS.search(t))
+
+    if has_digit and (has_sym_op or has_word_op):
+        return True
+
+    if has_num_word and (has_sym_op or has_word_op):
+        return True
+
     return False
 
 
+def _build_math_expression(message: str) -> str:
+    """
+    Extract and normalize the mathematical expression from the message.
+
+    Priority:
+      1. Percentage-of  -> delegate to normalizer
+      2. Fraction-of    -> delegate to normalizer
+      3. Square root    -> delegate to normalizer
+      4. Power phrase   -> delegate to normalizer
+      5. General        -> normalize full message and extract expression
+    """
+    # Let the normalizer handle all natural language forms
+    normalized = _normalize(message)
+
+    # If normalizer produced something clean, use it directly
+    # Strip away any surrounding prose
+    expr_match = re.search(
+        r"(?:sqrt\([^)]+\)|[\d(][\d\s()+\-*/^%.]*[\d)])",
+        normalized,
+    )
+    if expr_match:
+        expr = expr_match.group(0).strip()
+        # Fix ^ back to ** for the calculator AST parser
+        expr = expr.replace("^", "**")
+        return expr
+
+    # Fallback: return normalized full string
+    return normalized.strip()
+
+
 # ---------------------------------------------------------------------------
-# Routing rules
-#
-# Calculator MUST come before datetime so "times" does not trigger "time".
-#
-# Sprint 3.6: ALL matching rules are collected, not just the first.
-# Order is preserved â€” steps are appended in rule-list order.
+# DateTime intent detection
 # ---------------------------------------------------------------------------
 
-_RULES = [
-    (
-        [
-            "calculat*",
-            "comput*",
-            "multipl*",
-            "divid*",
-            "subtract*",
-            "evaluat*",
-            "math",
-            "add",
-            "plus",
-            "minus",
-            "times",
-            "solve",
-            "result of",
-            "how much is",
-        ],
-        "calculator",
-        _extract_expression,
-    ),
-    (
-        [
-            "what time",
-            "current time",
-            "what day",
-            "what date",
-            "right now",
-            "what year",
-            "what month",
-            "today",
-            "clock",
-            "time is",
-            "date is",
-            "time",
-            "date",
-            "day",
-            "today's date",
-            "today's time",
-            "current date",
-            "date and time",
-            "current date and time",
-            "today's date and time",
-            "tell me the time",
-            "tell me the date",
-            "tell me the day",
-            "what's the time",
-            "what's the date",
-            "what's today",
-            "what is today",
-            "what is the time",
-            "what is the date",
-            "what is the day",
-            "can you tell me the time",
-            "can you tell me the date",
-        ],
-        "datetime",
-        lambda msg: {},
-    ),
-    (
-        [
-            "list files", "list the files", "show files",
-            "files in", "what files",
-            "directory", "folder",
-        ],
-        "filesystem",
-        _extract_path,
-    ),
-]
+_DATETIME_KEYWORDS = re.compile(
+    r"""
+    \bwhat\s+time\b         |
+    \bcurrent\s+time\b      |
+    \bwhat\s+day\b          |
+    \bwhat\s+date\b         |
+    \bright\s+now\b         |
+    \bwhat\s+year\b         |
+    \bwhat\s+month\b        |
+    \btoday\b               |
+    \bclock\b               |
+    \btime\s+is\b           |
+    \bdate\s+is\b           |
+    \btoday'?s?\s+date\b    |
+    \btoday'?s?\s+time\b    |
+    \bcurrent\s+date\b      |
+    \bdate\s+and\s+time\b   |
+    \btell\s+me\s+the\s+time\b |
+    \btell\s+me\s+the\s+date\b |
+    \bwhat'?s\s+the\s+time\b   |
+    \bwhat'?s\s+the\s+date\b   |
+    \bwhat\s+is\s+the\s+time\b |
+    \bwhat\s+is\s+the\s+date\b |
+    \bwhat\s+is\s+today\b
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+
+def _is_datetime_intent(text: str) -> bool:
+    return bool(_DATETIME_KEYWORDS.search(text))
+
+
+# ---------------------------------------------------------------------------
+# Filesystem intent detection
+# ---------------------------------------------------------------------------
+
+_FILESYSTEM_KEYWORDS = re.compile(
+    r"""
+    \blist\s+files?\b     |
+    \bshow\s+files?\b     |
+    \bfiles?\s+in\b       |
+    \bwhat\s+files?\b     |
+    \bdirector\w*\b       |
+    \bfolder\b            |
+    \bread\s+file\b       |
+    \bopen\s+file\b       |
+    \bwrite\s+(?:to\s+)?file\b
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+_PATH_PATTERN = re.compile(
+    r"(?:in|at|of|inside)\s+([./~\\][\w./\\-]*)"
+)
+
+
+def _is_filesystem_intent(text: str) -> bool:
+    return bool(_FILESYSTEM_KEYWORDS.search(text))
+
+
+def _extract_path(message: str) -> dict[str, Any]:
+    match = _PATH_PATTERN.search(message)
+    return {"path": match.group(1) if match else "."}
 
 
 # ---------------------------------------------------------------------------
@@ -252,90 +319,86 @@ _RULES = [
 
 class Planner:
     """
-    Rule-based planner.
+    Intelligent request planner — Sprint 3.15.
 
-    Sprint 3.6: Collects ALL matching rules to support multi-tool
-    execution. Single-tool and no-tool cases are handled identically
-    to previous sprints.
+    Detects ALL matching intents and builds a multi-step ExecutionPlan.
+    Returns the same ExecutionPlan schema as Sprint 3.6 so the runtime
+    and all existing tests require zero changes.
+
+    Routing priority (mirrors tool_metadata.py):
+      1. Calculator  — math takes priority over datetime ("times" -> calc)
+      2. DateTime    — only if no math intent detected
+      3. Filesystem  — path/directory operations
+      4. No tool     — LLM answers directly
     """
 
     def plan(self, message: str) -> ExecutionPlan:
         """
-        Analyse the user message and produce an execution plan.
-
-        All matching rules are evaluated. Steps are added in rule-list
-        order, which mirrors the order tools appear in the request.
+        Analyse the message and return a typed ExecutionPlan.
 
         Args:
-            message: Raw user message string.
+            message: Raw user message.
 
         Returns:
             ExecutionPlan with zero, one, or many steps.
         """
-        normalised = message.lower().strip()
-        logger.info("Planner analysing: '%s'", message)
+        text = message.lower().strip()
+        logger.info("[Planner] Analysing: '%s'", message)
 
         steps: list[ExecutionPlanStep] = []
 
-        # Sprint 3.10.1: implicit calculator trigger.
-        # If the message contains a digit AND an arithmetic operator
-        # (symbol or word), force calculator match. This catches
-        # "What is 5 + 5?" which lacks the explicit "calculate" keyword,
-        # WITHOUT breaking pure datetime queries like "What's the time?".
-        has_digit = bool(re.search(r"\d", normalised))
-        has_operator = bool(
-            re.search(
-                r"[+\-*/%^]|"
-                r"\bplus\b|\bminus\b|\btimes\b|\bover\b|"
-                r"\bdivided\b|\bmultiplied\b",
-                normalised,
-            )
-        )
-        implicit_calc = has_digit and has_operator
+        # ── 1. Calculator ────────────────────────────────────────────
+        if _is_math_intent(text):
+            expr = _build_math_expression(message)
+            steps.append(ExecutionPlanStep(
+                tool_name  = "calculator",
+                parameters = {"expression": expr},
+            ))
+            logger.info("[Planner] Calculator selected | expr='%s'", expr)
 
-        for patterns, tool_name, extractor in _RULES:
-            matched = _matches(patterns, normalised)
-            if tool_name == "calculator" and implicit_calc:
-                matched = True
-            if matched:
-                params = extractor(message)
-                steps.append(
-                    ExecutionPlanStep(
-                        tool_name=tool_name,
-                        parameters=params,
-                    )
-                )
-                logger.info(
-                    "Planner: matched tool='%s' params=%s",
-                    tool_name,
-                    params,
-                )
+        # ── 2. DateTime ──────────────────────────────────────────────
+        # Only trigger datetime if we did NOT already match calculator.
+        # This prevents "times" from double-routing.
+        if _is_datetime_intent(text) and not steps:
+            steps.append(ExecutionPlanStep(
+                tool_name  = "datetime",
+                parameters = {},
+            ))
+            logger.info("[Planner] DateTime selected")
 
+        # ── 3. Filesystem ────────────────────────────────────────────
+        if _is_filesystem_intent(text):
+            params = _extract_path(message)
+            steps.append(ExecutionPlanStep(
+                tool_name  = "filesystem",
+                parameters = params,
+            ))
+            logger.info("[Planner] Filesystem selected | path='%s'", params.get("path"))
+
+        # ── No tool ──────────────────────────────────────────────────
         if not steps:
-            plan = ExecutionPlan(
-                steps=[],
-                tool_name=None,
-                parameters={},
-                reasoning="No matching tool. Provider responds directly.",
+            logger.info("[Planner] No tool matched — direct LLM response")
+            return ExecutionPlan(
+                steps      = [],
+                tool_name  = None,
+                parameters = {},
+                reasoning  = "No matching tool. Provider responds directly.",
             )
-            logger.info("Planner: no tool selected, direct response")
-            return plan
 
-        # Backward-compatible fields point to the first step.
+        # Build plan — backward-compat fields point to first step
         plan = ExecutionPlan(
-            steps=steps,
-            tool_name=steps[0].tool_name,
-            parameters=steps[0].parameters,
-            reasoning=(
-                f"{len(steps)} tool(s) matched: "
+            steps      = steps,
+            tool_name  = steps[0].tool_name,
+            parameters = steps[0].parameters,
+            reasoning  = (
+                f"{len(steps)} tool(s) selected: "
                 + ", ".join(s.tool_name for s in steps)
             ),
         )
+
         logger.info(
-            "Planner: %d step(s) planned: %s",
+            "[Planner] Plan ready | %d step(s): %s",
             len(steps),
             [s.tool_name for s in steps],
         )
         return plan
-
-

@@ -1,13 +1,15 @@
-"""
+﻿"""
 agent/tools/calculator.py
 Safe arithmetic calculator tool.
 
-Uses Python AST parsing instead of eval() to safely
-evaluate mathematical expressions.
+Sprint 3.15: Added sqrt() function support and ^ operator alias.
+Uses Python AST parsing instead of eval() for safety.
 """
 
 import ast
+import math
 import operator
+import re
 from typing import Any
 
 from backend.utils.logger import get_logger
@@ -15,7 +17,7 @@ from backend.agent.tools.base import BaseTool, ToolError
 
 logger = get_logger(__name__)
 
-# Permitted operators only — nothing else allowed
+# Permitted binary operators
 _OPERATORS: dict = {
     ast.Add:      operator.add,
     ast.Sub:      operator.sub,
@@ -28,19 +30,20 @@ _OPERATORS: dict = {
     ast.FloorDiv: operator.floordiv,
 }
 
+# Permitted function calls
+_FUNCTIONS: dict = {
+    "sqrt": math.sqrt,
+    "abs":  abs,
+    "round": round,
+    "floor": math.floor,
+    "ceil":  math.ceil,
+}
+
 
 def _safe_eval(node: ast.AST) -> float:
     """
-    Recursively evaluate an AST node using only permitted operators.
-
-    Args:
-        node: AST node to evaluate.
-
-    Returns:
-        Numeric result as float.
-
-    Raises:
-        ToolError: If an unsupported operation is encountered.
+    Recursively evaluate an AST node using only permitted operators
+    and functions.
     """
     if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
         return float(node.value)
@@ -59,15 +62,48 @@ def _safe_eval(node: ast.AST) -> float:
             raise ToolError(f"Unsupported unary operator: {op_type.__name__}")
         return _OPERATORS[op_type](_safe_eval(node.operand))
 
+    # Sprint 3.15: support sqrt(), abs(), round(), floor(), ceil()
+    if isinstance(node, ast.Call):
+        if not isinstance(node.func, ast.Name):
+            raise ToolError("Only named functions are permitted.")
+        func_name = node.func.id.lower()
+        if func_name not in _FUNCTIONS:
+            raise ToolError(
+                f"Function '{func_name}' is not permitted. "
+                f"Allowed: {', '.join(_FUNCTIONS)}"
+            )
+        args = [_safe_eval(a) for a in node.args]
+        return _FUNCTIONS[func_name](*args)
+
     raise ToolError(f"Unsupported expression node: {type(node).__name__}")
+
+
+def _preprocess(expression: str) -> str:
+    """
+    Normalise an expression before AST parsing.
+
+    Conversions:
+      ^   -> **        (from normalizer output)
+      x   -> *         (unicode multiply)
+      ÷   -> /         (unicode divide)
+    """
+    result = (
+        expression.strip()
+        .replace("^", "**")
+        .replace("\u00d7", "*")
+        .replace("\u00f7", "/")
+    )
+    # Collapse multiple spaces
+    result = re.sub(r"\s+", " ", result)
+    return result
 
 
 class CalculatorTool(BaseTool):
     """
     Arithmetic calculator tool.
 
-    Evaluates mathematical expressions safely.
-    Supports: + - * / // % ** and parentheses.
+    Sprint 3.15: supports sqrt(), abs(), round(), floor(), ceil()
+    in addition to all standard arithmetic operators.
     """
 
     @property
@@ -78,7 +114,8 @@ class CalculatorTool(BaseTool):
     def description(self) -> str:
         return (
             "Evaluates arithmetic expressions. "
-            "Supports +, -, *, /, //, %, ** and parentheses."
+            "Supports +, -, *, /, //, %, **, ^, sqrt(), abs(), "
+            "round(), floor(), ceil() and parentheses."
         )
 
     def execute(self, expression: str = "", **kwargs: Any) -> str:
@@ -86,10 +123,10 @@ class CalculatorTool(BaseTool):
         Evaluate an arithmetic expression.
 
         Args:
-            expression: Mathematical expression string, e.g. "25 * 18".
+            expression: Mathematical expression string.
 
         Returns:
-            Result as a formatted string.
+            Result as a formatted string: "<expression> = <result>"
 
         Raises:
             ToolError: If expression is missing or cannot be evaluated.
@@ -97,22 +134,31 @@ class CalculatorTool(BaseTool):
         if not expression:
             raise ToolError("No expression provided to calculator.")
 
-        logger.debug("CalculatorTool evaluating: %s", expression)
+        logger.debug("[Calculator] Raw expression: %s", expression)
 
-        # Normalise common alternate symbols
-        cleaned = (
-            expression.strip()
-            .replace("^", "**")
-            .replace("×", "*")
-            .replace("÷", "/")
-        )
+        cleaned = _preprocess(expression)
+        logger.debug("[Calculator] Cleaned expression: %s", cleaned)
 
         try:
             tree   = ast.parse(cleaned, mode="eval")
             result = _safe_eval(tree.body)
-        except (SyntaxError, ValueError, ZeroDivisionError) as exc:
+        except ToolError:
+            raise
+        except SyntaxError as exc:
+            raise ToolError(
+                f"Invalid expression syntax: '{expression}'. "
+                f"Error: {exc}"
+            ) from exc
+        except ZeroDivisionError:
+            raise ToolError("Division by zero is undefined.")
+        except Exception as exc:
             raise ToolError(f"Calculation failed: {exc}") from exc
 
-        formatted = int(result) if result == int(result) else result
-        logger.info("CalculatorTool: %s = %s", expression, formatted)
+        # Format result — integer if whole number, float otherwise
+        if isinstance(result, float) and result.is_integer():
+            formatted = int(result)
+        else:
+            formatted = round(result, 10)
+
+        logger.info("[Calculator] %s = %s", expression, formatted)
         return f"{expression} = {formatted}"

@@ -277,8 +277,27 @@ class Planner:
 
         steps: list[ExecutionPlanStep] = []
 
+        # Sprint 3.10.1: implicit calculator trigger.
+        # If the message contains a digit AND an arithmetic operator
+        # (symbol or word), force calculator match. This catches
+        # "What is 5 + 5?" which lacks the explicit "calculate" keyword,
+        # WITHOUT breaking pure datetime queries like "What's the time?".
+        has_digit = bool(re.search(r"\d", normalised))
+        has_operator = bool(
+            re.search(
+                r"[+\-*/%^]|"
+                r"\bplus\b|\bminus\b|\btimes\b|\bover\b|"
+                r"\bdivided\b|\bmultiplied\b",
+                normalised,
+            )
+        )
+        implicit_calc = has_digit and has_operator
+
         for patterns, tool_name, extractor in _RULES:
-            if _matches(patterns, normalised):
+            matched = _matches(patterns, normalised)
+            if tool_name == "calculator" and implicit_calc:
+                matched = True
+            if matched:
                 params = extractor(message)
                 steps.append(
                     ExecutionPlanStep(
@@ -318,3 +337,5 @@ class Planner:
             [s.tool_name for s in steps],
         )
         return plan
+
+

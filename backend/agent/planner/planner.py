@@ -1,4 +1,4 @@
-r"""
+﻿r"""
 agent/planner/planner.py
 Rule-based request planner.
 
@@ -9,6 +9,11 @@ Calculator checked BEFORE datetime so "times" routes correctly.
 Pattern conventions:
   "word"    -> whole-word match (\bword\b)
   "prefix*" -> prefix match (\bprefix\w*)
+
+Sprint 3.2 — DateTime intent recognition expanded.
+  Added: "time", "date", "day", "date and time", "today's time",
+         "today's date", "current date", "tell me the time",
+         "tell me the date", "what's the time", "what's the date"
 """
 
 from __future__ import annotations
@@ -116,7 +121,7 @@ def _matches(patterns: list, text: str) -> bool:
     """
     for pattern in patterns:
         if pattern.endswith("*"):
-            # Prefix match — word starting with prefix
+            # Prefix match - word starting with prefix
             prefix = re.escape(pattern[:-1])
             regex = r"\b" + prefix + r"\w*"
         else:
@@ -128,7 +133,19 @@ def _matches(patterns: list, text: str) -> bool:
     return False
 
 
-# Calculator MUST come before datetime so "times" does not match "time"
+# ---------------------------------------------------------------------------
+# Routing rules
+#
+# Calculator MUST come before datetime so "times" does not trigger "time".
+#
+# DateTime patterns — Sprint 3.2 expansion:
+#   Short queries  : "time", "date", "day"
+#   Possessives    : "today's date", "today's time"
+#   Compound       : "date and time", "current date and time"
+#   Conversational : "tell me the time", "what's the time"
+#   Existing       : all original patterns retained unchanged
+# ---------------------------------------------------------------------------
+
 _RULES = [
     (
         [
@@ -154,10 +171,44 @@ _RULES = [
     ),
     (
         [
-            "what time", "current time",
-            "what day", "what date",
-            "right now", "what year", "what month",
-            "today", "clock", "time is", "date is",
+            # ── Original patterns (unchanged) ───────────────────────────
+            "what time",
+            "current time",
+            "what day",
+            "what date",
+            "right now",
+            "what year",
+            "what month",
+            "today",
+            "clock",
+            "time is",
+            "date is",
+            # ── Sprint 3.2 additions ────────────────────────────────────
+            # Single-word short queries
+            "time",
+            "date",
+            "day",
+            # Possessive forms
+            "today's date",
+            "today's time",
+            "current date",
+            # Compound date-and-time requests
+            "date and time",
+            "current date and time",
+            "today's date and time",
+            # Conversational variants
+            "tell me the time",
+            "tell me the date",
+            "tell me the day",
+            "what's the time",
+            "what's the date",
+            "what's today",
+            "what is today",
+            "what is the time",
+            "what is the date",
+            "what is the day",
+            "can you tell me the time",
+            "can you tell me the date",
         ],
         "datetime",
         lambda msg: {},

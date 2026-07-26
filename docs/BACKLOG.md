@@ -1,4 +1,4 @@
-# Tarka Engineering Backlog
+﻿# Tarka Engineering Backlog
 
 **Document Version:** 1.0  
 **Created:** Sprint 3.1  
@@ -53,26 +53,26 @@ Every engineering task should follow the workflow below.
 
 ```text
 Issue Discovered
-        │
-        ▼
+        â”‚
+        â–¼
 Document in BACKLOG.md
-        │
-        ▼
+        â”‚
+        â–¼
 Assign Priority
-        │
-        ▼
+        â”‚
+        â–¼
 Assign Sprint
-        │
-        ▼
+        â”‚
+        â–¼
 Implementation
-        │
-        ▼
+        â”‚
+        â–¼
 Regression Testing
-        │
-        ▼
+        â”‚
+        â–¼
 Documentation Update
-        │
-        ▼
+        â”‚
+        â–¼
 Resolved
 ```
 
@@ -148,7 +148,7 @@ Notes
 
 ---
 
-# Section 1 — High Priority Bugs
+# Section 1 â€” High Priority Bugs
 
 ---
 
@@ -299,7 +299,7 @@ Command Dispatcher should become the first stage of REPL processing.
 
 ---
 
-# Section 2 — Medium Priority Bugs
+# Section 2 â€” Medium Priority Bugs
 
 ---
 
@@ -369,7 +369,7 @@ Likely requires prompt refinement and explicit success signalling.
 
 ---
 
-# Section 3 — Low Priority Bugs
+# Section 3 â€” Low Priority Bugs
 
 No low-priority issues have been identified.
 
@@ -377,7 +377,7 @@ This section will expand as testing continues.
 
 ---
 
-# Section 4 — Future Enhancements
+# Section 4 â€” Future Enhancements
 
 ---
 
@@ -412,7 +412,7 @@ As a result, follow-up questions cannot reference earlier interactions.
 ```
 Multiply 14 by 17
 
-↓
+â†“
 
 Please double check.
 ```
@@ -462,7 +462,7 @@ Compound requests requiring multiple tools are only partially completed.
 ### Example
 
 ```
-What's today's date and calculate 25 × 8
+What's today's date and calculate 25 Ã— 8
 ```
 
 Current
@@ -529,7 +529,7 @@ An issue is considered complete only when:
 
 | ID | Title | Priority | Category | Status |
 |----|--------|----------|----------|--------|
-| ISSUE-001 | Planner fails to detect short DateTime requests | High | Planner | Open |
+| ISSUE-001 | Planner fails to detect short DateTime requests | High | Planner | Resolved |
 | ISSUE-002 | REPL commands processed by the LLM | High | CLI | Open |
 | ISSUE-003 | LLM expresses uncertainty after successful tool execution | Medium | Prompt Engineering | Open |
 | ISSUE-004 | Conversation context not retained between requests | Future Enhancement | Memory | Deferred |
@@ -539,7 +539,7 @@ An issue is considered complete only when:
 
 # Revision History
 
-## Version 1.0 — Sprint 3.1
+## Version 1.0 â€” Sprint 3.1
 
 - Initial Engineering Backlog created.
 - Added confirmed Sprint 2 testing issues.

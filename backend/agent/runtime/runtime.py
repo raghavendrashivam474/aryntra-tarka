@@ -8,9 +8,12 @@ Sprint 3.9   - SQLite persistence added. Session-aware processing.
 Sprint 3.9.1 - Prompt refactor to prevent identity guardrail leakage.
 Sprint 3.9.2 - Memory rebuilt from SQLite per session on every request
                to eliminate cross-session bleed.
+Sprint 3.10  - Execution metadata collected and returned with every
+               response. tools_used, tool_count, duration_ms exposed.
 """
 
-from typing import AsyncIterator
+import time
+from typing import AsyncIterator, Tuple
 
 from backend.utils.logger import get_logger
 from backend.providers.llm.base import BaseLLMProvider
@@ -19,6 +22,7 @@ from backend.agent.tools.base import ToolError
 from backend.agent.tools.registry import ToolRegistry
 from backend.agent.memory.conversation import ConversationMemory
 from backend.agent.memory.persistence import ConversationPersistence
+from backend.agent.schemas.chat import ExecutionMetadata
 
 logger = get_logger(__name__)
 
@@ -137,8 +141,9 @@ class AgentRuntime:
     fresh ConversationMemory from SQLite for that specific session,
     guaranteeing session isolation.
 
-    The self.memory attribute is preserved for backwards compatibility
-    with older tests but is not used by production code paths.
+    Sprint 3.10: every response now carries ExecutionMetadata containing
+    tools_used, tool_count, and duration_ms. Pure conversation responses
+    carry metadata with empty tools_used and zero counts.
     """
 
     def __init__(
@@ -155,7 +160,7 @@ class AgentRuntime:
         logger.info("AgentRuntime initialised")
 
     # ------------------------------------------------------------------ #
-    # Session-scoped memory builder                                      #
+    # Session-scoped memory builder                                       #
     # ------------------------------------------------------------------ #
 
     def _build_session_memory(self, session_id: str) -> ConversationMemory:
@@ -176,45 +181,22 @@ class AgentRuntime:
     # Public API                                                          #
     # ------------------------------------------------------------------ #
 
-    async def process(self, message: str, session_id: str = "default") -> str:
+    async def process(
+        self, message: str, session_id: str = "default"
+    ) -> Tuple[str, ExecutionMetadata]:
+        """
+        Process a message and return (response_text, metadata).
+
+        Sprint 3.10: return type changed from str to Tuple[str, ExecutionMetadata].
+        chat.py route updated to unpack the tuple.
+        """
         logger.info(
             "Runtime processing | session=%s message='%s'",
             session_id,
             message,
         )
 
-        session_memory = self._build_session_memory(session_id)
-
-        ConversationPersistence.save_message(session_id, "user", message)
-        session_memory.add_user_message(message)
-        self.memory = session_memory  # keep legacy attribute in sync
-
-        plan: ExecutionPlan = self.planner.plan(message)
-
-        if not plan.steps:
-            prompt = self._build_direct_prompt(message, session_memory)
-        elif len(plan.steps) == 1:
-            prompt = self._build_tool_prompt(message, plan)
-        else:
-            prompt = self._build_multi_tool_prompt(message, plan)
-
-        logger.info("Sending prompt to provider")
-        response = await self.provider.generate(prompt)
-        logger.info("Runtime response ready (%d chars)", len(response))
-
-        ConversationPersistence.save_message(session_id, "assistant", response)
-        session_memory.add_assistant_message(response)
-
-        return response
-
-    async def process_stream(
-        self, message: str, session_id: str = "default"
-    ) -> AsyncIterator[str]:
-        logger.info(
-            "Runtime streaming | session=%s message='%s'",
-            session_id,
-            message,
-        )
+        start_ms = time.monotonic()
 
         session_memory = self._build_session_memory(session_id)
 
@@ -224,12 +206,66 @@ class AgentRuntime:
 
         plan: ExecutionPlan = self.planner.plan(message)
 
+        tools_used: list[str] = []
+
         if not plan.steps:
             prompt = self._build_direct_prompt(message, session_memory)
         elif len(plan.steps) == 1:
-            prompt = self._build_tool_prompt(message, plan)
+            prompt, tools_used = self._build_tool_prompt(message, plan)
         else:
-            prompt = self._build_multi_tool_prompt(message, plan)
+            prompt, tools_used = self._build_multi_tool_prompt(message, plan)
+
+        logger.info("Sending prompt to provider")
+        response = await self.provider.generate(prompt)
+        logger.info("Runtime response ready (%d chars)", len(response))
+
+        duration_ms = int((time.monotonic() - start_ms) * 1000)
+
+        ConversationPersistence.save_message(session_id, "assistant", response)
+        session_memory.add_assistant_message(response)
+
+        metadata = ExecutionMetadata(
+            tools_used=tools_used,
+            tool_count=len(tools_used),
+            duration_ms=duration_ms,
+        )
+
+        return response, metadata
+
+    async def process_stream(
+        self, message: str, session_id: str = "default"
+    ) -> AsyncIterator[str]:
+        """
+        Stream response chunks. Metadata is emitted as a final SSE event
+        after [DONE] so existing chunk consumers are unaffected.
+
+        Yields str chunks. The final metadata chunk is a JSON string
+        prefixed with __METADATA__ so the frontend can parse it separately.
+        """
+        logger.info(
+            "Runtime streaming | session=%s message='%s'",
+            session_id,
+            message,
+        )
+
+        start_ms = time.monotonic()
+
+        session_memory = self._build_session_memory(session_id)
+
+        ConversationPersistence.save_message(session_id, "user", message)
+        session_memory.add_user_message(message)
+        self.memory = session_memory
+
+        plan: ExecutionPlan = self.planner.plan(message)
+
+        tools_used: list[str] = []
+
+        if not plan.steps:
+            prompt = self._build_direct_prompt(message, session_memory)
+        elif len(plan.steps) == 1:
+            prompt, tools_used = self._build_tool_prompt(message, plan)
+        else:
+            prompt, tools_used = self._build_multi_tool_prompt(message, plan)
 
         logger.info("Streaming prompt to provider")
         accumulated: list[str] = []
@@ -241,10 +277,21 @@ class AgentRuntime:
         full_response = "".join(accumulated)
         logger.info("Runtime stream complete (%d chars)", len(full_response))
 
+        duration_ms = int((time.monotonic() - start_ms) * 1000)
+
         ConversationPersistence.save_message(
             session_id, "assistant", full_response
         )
         session_memory.add_assistant_message(full_response)
+
+        # Emit metadata as a tagged final yield so chat.py can forward it
+        import json as _json
+        metadata = ExecutionMetadata(
+            tools_used=tools_used,
+            tool_count=len(tools_used),
+            duration_ms=duration_ms,
+        )
+        yield f"__METADATA__{_json.dumps(metadata.model_dump())}"
 
     # ------------------------------------------------------------------ #
     # Prompt builders                                                     #
@@ -263,30 +310,41 @@ class AgentRuntime:
             message=message,
         )
 
-    def _build_tool_prompt(self, message: str, plan: ExecutionPlan) -> str:
-        tool_name = plan.tool_name
+    def _build_tool_prompt(
+        self, message: str, plan: ExecutionPlan
+    ) -> Tuple[str, list[str]]:
+        """Returns (prompt_string, tools_used_list)."""
+        tool_name = plan.steps[0].tool_name
         logger.info("Single tool selected: '%s'", tool_name)
         try:
             tool_result = self.registry.execute(tool_name, **plan.parameters)
-            return _PROMPT_WITH_TOOL.format(
+            prompt = _PROMPT_WITH_TOOL.format(
                 message=message,
                 tool_name=tool_name,
                 tool_result=tool_result,
             )
+            return prompt, [tool_name]
         except ToolError as exc:
             logger.error("Tool '%s' failed: %s", tool_name, exc)
-            return _PROMPT_TOOL_ERROR.format(
+            prompt = _PROMPT_TOOL_ERROR.format(
                 message=message,
                 tool_name=tool_name,
                 error=str(exc),
             )
+            # Tool was attempted - still report it
+            return prompt, [tool_name]
 
-    def _build_multi_tool_prompt(self, message: str, plan: ExecutionPlan) -> str:
+    def _build_multi_tool_prompt(
+        self, message: str, plan: ExecutionPlan
+    ) -> Tuple[str, list[str]]:
+        """Returns (prompt_string, tools_used_list)."""
         logger.info("Multi-tool execution: %d steps", len(plan.steps))
         result_lines: list[str] = []
+        tools_used: list[str] = []
 
         for step in plan.steps:
             tool_name = step.tool_name
+            tools_used.append(tool_name)
             try:
                 result = self.registry.execute(tool_name, **step.parameters)
                 result_lines.append(f"{tool_name.capitalize()}: {result}")
@@ -301,7 +359,10 @@ class AgentRuntime:
                 )
 
         results_block = "\n".join(result_lines)
-        return _PROMPT_MULTI_TOOL.format(
+        prompt = _PROMPT_MULTI_TOOL.format(
             message=message,
             results_block=results_block,
         )
+        return prompt, tools_used
+
+

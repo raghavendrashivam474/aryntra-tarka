@@ -1,6 +1,10 @@
 ﻿"""
 tests/test_sprint35_memory.py
 Sprint 3.5 — Session Memory Regression Tests
+
+Sprint 3.10 update: rt.process() now returns (response, metadata).
+All integration test call sites updated to unpack the tuple.
+Unit tests and tool regression tests unchanged.
 """
 
 import sys
@@ -47,9 +51,7 @@ class MockLLMProvider(BaseLLMProvider):
 
     Priority order (most specific first):
       1. Colour recall
-      2. Language recall  <- must precede name check to avoid
-                             collision when both raghav and c++
-                             appear in the same multi-turn prompt
+      2. Language recall
       3. Hackathon recall
       4. Name recall
       5. Generic fallback
@@ -158,7 +160,8 @@ def test_name_recall() -> None:
     async def run():
         rt = make_runtime()
         await rt.process("My name is Raghav.")
-        return await rt.process("What's my name?")
+        resp, _ = await rt.process("What's my name?")
+        return resp
     resp = asyncio.run(run())
     check("Second response recalls name 'Raghav'", "raghav" in resp.lower())
 
@@ -168,7 +171,8 @@ def test_language_recall() -> None:
     async def run():
         rt = make_runtime()
         await rt.process("I like C++.")
-        return await rt.process("Which language do I like?")
+        resp, _ = await rt.process("Which language do I like?")
+        return resp
     resp = asyncio.run(run())
     check("Second response recalls C++", "c++" in resp.lower())
 
@@ -178,7 +182,8 @@ def test_topic_recall() -> None:
     async def run():
         rt = make_runtime()
         await rt.process("Today I'm preparing for the hackathon.")
-        return await rt.process("What am I preparing for?")
+        resp, _ = await rt.process("What am I preparing for?")
+        return resp
     resp = asyncio.run(run())
     check("Second response recalls hackathon", "hackathon" in resp.lower())
 
@@ -188,7 +193,8 @@ def test_colour_recall() -> None:
     async def run():
         rt = make_runtime()
         await rt.process("My favourite colour is blue.")
-        return await rt.process("What's my favourite colour?")
+        resp, _ = await rt.process("What's my favourite colour?")
+        return resp
     resp = asyncio.run(run())
     check("Second response recalls blue", "blue" in resp.lower())
 
@@ -199,8 +205,8 @@ def test_multiturn_conversation() -> None:
         rt = make_runtime()
         await rt.process("My name is Raghav.")
         await rt.process("I like C++.")
-        r3 = await rt.process("What's my name?")
-        r4 = await rt.process("Which language do I like?")
+        r3, _ = await rt.process("What's my name?")
+        r4, _ = await rt.process("Which language do I like?")
         return rt, r3, r4
     rt, r3, r4 = asyncio.run(run())
     check("Turn 3 recalls name",                        "raghav" in r3.lower())
@@ -213,7 +219,8 @@ def test_calculator_regression() -> None:
     async def run():
         rt = make_runtime()
         await rt.process("My name is Raghav.")
-        return await rt.process("15 * 18")
+        resp, _ = await rt.process("15 * 18")
+        return resp
     resp = asyncio.run(run())
     check("Calculator request returns a string response", isinstance(resp, str))
     check("Calculator response is non-empty",             len(resp) > 0)
@@ -224,7 +231,8 @@ def test_datetime_regression() -> None:
     async def run():
         rt = make_runtime()
         await rt.process("My name is Raghav.")
-        return await rt.process("Current time")
+        resp, _ = await rt.process("Current time")
+        return resp
     resp = asyncio.run(run())
     check("DateTime request returns a string response", isinstance(resp, str))
     check("DateTime response is non-empty",             len(resp) > 0)
@@ -236,7 +244,8 @@ def test_memory_isolated_between_runtimes() -> None:
         rt_a = make_runtime()
         rt_b = make_runtime()
         await rt_a.process("My name is Raghav.")
-        return await rt_b.process("What's my name?")
+        resp, _ = await rt_b.process("What's my name?")
+        return resp
     resp = asyncio.run(run())
     check("Runtime B has no memory of Runtime A conversation",
           "raghav" not in resp.lower())

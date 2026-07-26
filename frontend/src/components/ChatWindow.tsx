@@ -1,12 +1,14 @@
 ﻿import React, { useState, useRef, useEffect, useCallback } from "react";
 import MessageBubble from "./MessageBubble";
 import TypingIndicator from "./TypingIndicator";
-import { sendMessageStreaming, sendMessage } from "../api";
+import { sendMessageStreaming, sendMessage } from "../services/api";
+import type { ExecutionMetadata } from "../types";
 
 interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
+  metadata?: ExecutionMetadata;
 }
 
 interface SessionSummary {
@@ -54,9 +56,9 @@ const ChatWindow: React.FC = () => {
     }
   }, []);
 
-  // ---------------------------------------------------------------------
-  // Load conversation list
-  // ---------------------------------------------------------------------
+  // -----------------------------------------------------------------------
+  // Session list
+  // -----------------------------------------------------------------------
   const loadSessions = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/chat/sessions`);
@@ -72,16 +74,15 @@ const ChatWindow: React.FC = () => {
     loadSessions();
   }, [loadSessions]);
 
-  // Refresh session list whenever the current conversation gets a new reply
   useEffect(() => {
     if (!isStreaming && !isThinking && messages.length > 0) {
       loadSessions();
     }
   }, [isStreaming, isThinking, messages.length, loadSessions]);
 
-  // ---------------------------------------------------------------------
-  // Load history when session changes
-  // ---------------------------------------------------------------------
+  // -----------------------------------------------------------------------
+  // History restore when session changes
+  // -----------------------------------------------------------------------
   useEffect(() => {
     let cancelled = false;
     setHistoryLoaded(false);
@@ -125,8 +126,7 @@ const ChatWindow: React.FC = () => {
     const container = containerRef.current;
     if (!container) return;
     const { scrollTop, scrollHeight, clientHeight } = container;
-    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-    shouldAutoScroll.current = distanceFromBottom < 80;
+    shouldAutoScroll.current = scrollHeight - scrollTop - clientHeight < 80;
   };
 
   const generateId = () =>
@@ -134,15 +134,12 @@ const ChatWindow: React.FC = () => {
       ? crypto.randomUUID()
       : Math.random().toString(36).slice(2);
 
-  // ---------------------------------------------------------------------
+  // -----------------------------------------------------------------------
   // Session actions
-  // ---------------------------------------------------------------------
+  // -----------------------------------------------------------------------
   const handleNewChat = () => {
     if (isThinking || isStreaming) return;
-    const newId =
-      typeof crypto !== "undefined"
-        ? crypto.randomUUID()
-        : Math.random().toString(36).slice(2);
+    const newId = crypto.randomUUID();
     localStorage.setItem(SESSION_STORAGE_KEY, newId);
     setSessionId(newId);
     setMessages([]);
@@ -152,8 +149,7 @@ const ChatWindow: React.FC = () => {
   };
 
   const handleSelectSession = (id: string) => {
-    if (isThinking || isStreaming) return;
-    if (id === sessionId) return;
+    if (isThinking || isStreaming || id === sessionId) return;
     localStorage.setItem(SESSION_STORAGE_KEY, id);
     setSessionId(id);
     setError(null);
@@ -161,36 +157,28 @@ const ChatWindow: React.FC = () => {
     shouldAutoScroll.current = true;
   };
 
-  const handleDeleteSession = async (
-    e: React.MouseEvent,
-    id: string
-  ) => {
+  const handleDeleteSession = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     if (isThinking || isStreaming) return;
     if (!confirm("Delete this conversation permanently?")) return;
-
     try {
       await fetch(`${API_BASE}/chat/sessions/${id}`, { method: "DELETE" });
       await loadSessions();
-
-      // If we deleted the active session, start a new one
-      if (id === sessionId) {
-        handleNewChat();
-      }
+      if (id === sessionId) handleNewChat();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Delete failed");
     }
   };
 
-  // ---------------------------------------------------------------------
-  // Send flows
-  // ---------------------------------------------------------------------
-  const handleSend = async () => {
-    const trimmed = input.trim();
+  // -----------------------------------------------------------------------
+  // Send
+  // -----------------------------------------------------------------------
+  const handleSend = async (overrideMessage?: string) => {
+    const trimmed = (overrideMessage ?? input).trim();
     if (!trimmed || isThinking || isStreaming) return;
 
     setError(null);
-    setInput("");
+    if (!overrideMessage) setInput("");
     shouldAutoScroll.current = true;
 
     const userMessage: Message = {
@@ -206,6 +194,36 @@ const ChatWindow: React.FC = () => {
       await handleNonStreamingResponse(trimmed);
     }
   };
+
+  // -----------------------------------------------------------------------
+  // Regenerate - resend the last user message, replace last assistant reply
+  // -----------------------------------------------------------------------
+  const handleRegenerate = useCallback(async () => {
+    if (isThinking || isStreaming) return;
+
+    // Find the last user message
+    const lastUserMsg = [...messages]
+      .reverse()
+      .find((m) => m.role === "user");
+    if (!lastUserMsg) return;
+
+    // Remove the last assistant message so we can replace it
+    setMessages((prev) => {
+      const idx = [...prev].reverse().findIndex((m) => m.role === "assistant");
+      if (idx === -1) return prev;
+      const actualIdx = prev.length - 1 - idx;
+      return prev.filter((_, i) => i !== actualIdx);
+    });
+
+    setError(null);
+    shouldAutoScroll.current = true;
+
+    if (USE_STREAMING) {
+      await handleStreamingResponse(lastUserMsg.content);
+    } else {
+      await handleNonStreamingResponse(lastUserMsg.content);
+    }
+  }, [messages, isThinking, isStreaming, sessionId]);
 
   const handleStreamingResponse = async (message: string) => {
     setIsThinking(true);
@@ -236,10 +254,18 @@ const ChatWindow: React.FC = () => {
             );
           }
         },
-        () => {
+        (metadata?: ExecutionMetadata) => {
           setIsThinking(false);
           setIsStreaming(false);
           setStreamingId(null);
+          // Attach metadata to the completed assistant message
+          if (metadata) {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantId ? { ...msg, metadata } : msg
+              )
+            );
+          }
         },
         (errorMessage: string) => {
           setIsThinking(false);
@@ -264,13 +290,16 @@ const ChatWindow: React.FC = () => {
   const handleNonStreamingResponse = async (message: string) => {
     setIsThinking(true);
     try {
-      const response = await sendMessage(message, sessionId);
-      const assistantMessage: Message = {
-        id: generateId(),
-        role: "assistant",
-        content: response,
-      };
-      setMessages((prev) => [...prev, assistantMessage]);
+      const { response, metadata } = await sendMessage(message, sessionId);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: generateId(),
+          role: "assistant",
+          content: response,
+          metadata,
+        },
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unexpected error");
     } finally {
@@ -292,7 +321,7 @@ const ChatWindow: React.FC = () => {
       <style>{`
         @keyframes blink {
           0%, 100% { opacity: 1; }
-          50% { opacity: 0; }
+          50%       { opacity: 0; }
         }
       `}</style>
 
@@ -305,7 +334,9 @@ const ChatWindow: React.FC = () => {
           fontFamily: "'Inter', 'Segoe UI', sans-serif",
         }}
       >
-        {/* ---------------- Sidebar ---------------- */}
+        {/* ----------------------------------------------------------------
+            Sidebar
+        ---------------------------------------------------------------- */}
         <aside
           style={{
             width: "260px",
@@ -315,12 +346,7 @@ const ChatWindow: React.FC = () => {
             flexDirection: "column",
           }}
         >
-          <div
-            style={{
-              padding: "16px",
-              borderBottom: "1px solid #1f2937",
-            }}
-          >
+          <div style={{ padding: "16px", borderBottom: "1px solid #1f2937" }}>
             <button
               onClick={handleNewChat}
               disabled={disabled}
@@ -386,16 +412,14 @@ const ChatWindow: React.FC = () => {
                     transition: "background 0.15s",
                   }}
                   onMouseEnter={(e) => {
-                    if (!isActive && !disabled) {
+                    if (!isActive && !disabled)
                       (e.currentTarget as HTMLDivElement).style.background =
                         "#111827";
-                    }
                   }}
                   onMouseLeave={(e) => {
-                    if (!isActive) {
+                    if (!isActive)
                       (e.currentTarget as HTMLDivElement).style.background =
                         "transparent";
-                    }
                   }}
                 >
                   <div
@@ -427,17 +451,17 @@ const ChatWindow: React.FC = () => {
                       flexShrink: 0,
                     }}
                     onMouseEnter={(e) => {
-                      if (!disabled) {
-                        (e.currentTarget as HTMLButtonElement).style.color =
-                          "#f87171";
-                      }
+                      if (!disabled)
+                        (
+                          e.currentTarget as HTMLButtonElement
+                        ).style.color = "#f87171";
                     }}
                     onMouseLeave={(e) => {
                       (e.currentTarget as HTMLButtonElement).style.color =
                         "#6b7280";
                     }}
                   >
-                    x
+                    ×
                   </button>
                 </div>
               );
@@ -445,7 +469,9 @@ const ChatWindow: React.FC = () => {
           </div>
         </aside>
 
-        {/* ---------------- Main chat area ---------------- */}
+        {/* ----------------------------------------------------------------
+            Main chat area
+        ---------------------------------------------------------------- */}
         <div
           style={{
             flex: 1,
@@ -454,6 +480,7 @@ const ChatWindow: React.FC = () => {
             minWidth: 0,
           }}
         >
+          {/* Header */}
           <div
             style={{
               padding: "16px 24px",
@@ -491,6 +518,7 @@ const ChatWindow: React.FC = () => {
             </div>
           </div>
 
+          {/* Error banner */}
           {error && (
             <div
               style={{
@@ -514,11 +542,12 @@ const ChatWindow: React.FC = () => {
                   fontSize: "16px",
                 }}
               >
-                x
+                ×
               </button>
             </div>
           )}
 
+          {/* Message list */}
           <div
             ref={containerRef}
             onScroll={handleScroll}
@@ -556,14 +585,17 @@ const ChatWindow: React.FC = () => {
                 role={msg.role}
                 content={msg.content}
                 isStreaming={isStreaming && msg.id === streamingId}
+                metadata={msg.metadata}
+                onRegenerate={handleRegenerate}
+                disabled={disabled}
               />
             ))}
 
             {isThinking && <TypingIndicator />}
-
             <div ref={messagesEndRef} />
           </div>
 
+          {/* Input bar */}
           <div
             style={{
               padding: "16px 24px",
@@ -606,7 +638,7 @@ const ChatWindow: React.FC = () => {
                 }}
               />
               <button
-                onClick={handleSend}
+                onClick={() => handleSend()}
                 disabled={!input.trim() || disabled}
                 style={{
                   background:
@@ -634,7 +666,7 @@ const ChatWindow: React.FC = () => {
                 marginTop: "6px",
               }}
             >
-              Enter to send - Shift+Enter for new line
+              Enter to send · Shift+Enter for new line
             </div>
           </div>
         </div>

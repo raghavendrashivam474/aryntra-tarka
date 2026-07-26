@@ -6,6 +6,8 @@ Sprint 3.7   - POST /chat          non-streaming response
 Sprint 3.8   - POST /chat/stream   SSE streaming response
 Sprint 3.9   - session_id wired through, GET /history/{session_id}
 Sprint 3.9.2 - GET /sessions, DELETE /sessions/{session_id}
+Sprint 3.10  - Execution metadata attached to ChatResponse.
+               Streaming route emits metadata as final SSE event.
 """
 
 import json
@@ -14,7 +16,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from backend.utils.logger import get_logger
-from backend.agent.schemas.chat import ChatRequest, ChatResponse
+from backend.agent.schemas.chat import ChatRequest, ChatResponse, ExecutionMetadata
 from backend.agent.services.agent import get_agent_runtime
 from backend.agent.memory.persistence import ConversationPersistence
 from backend.core.database import init_db
@@ -28,7 +30,6 @@ router = APIRouter(prefix="/chat", tags=["Chat"])
 
 # ---------------------------------------------------------------------------
 # GET /api/chat/sessions
-# Sprint 3.9.2 - List all persisted sessions
 # ---------------------------------------------------------------------------
 
 @router.get(
@@ -44,7 +45,6 @@ async def list_sessions():
 
 # ---------------------------------------------------------------------------
 # DELETE /api/chat/sessions/{session_id}
-# Sprint 3.9.2 - Delete a conversation
 # ---------------------------------------------------------------------------
 
 @router.delete(
@@ -101,7 +101,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
     runtime = get_agent_runtime()
 
     try:
-        response_text = await runtime.process(
+        response_text, metadata = await runtime.process(
             request.message,
             session_id=request.session_id,
         )
@@ -113,11 +113,13 @@ async def chat(request: ChatRequest) -> ChatResponse:
         ) from exc
 
     logger.info(
-        "POST /chat | session=%s response ready (%d chars)",
+        "POST /chat | session=%s response ready (%d chars) tools=%s duration=%dms",
         request.session_id,
         len(response_text),
+        metadata.tools_used,
+        metadata.duration_ms,
     )
-    return ChatResponse(response=response_text)
+    return ChatResponse(response=response_text, metadata=metadata)
 
 
 # ---------------------------------------------------------------------------
@@ -144,8 +146,14 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
                 request.message,
                 session_id=request.session_id,
             ):
-                payload = json.dumps({"content": chunk})
-                yield f"data: {payload}\n\n"
+                # Runtime emits a tagged metadata chunk as the final yield
+                if chunk.startswith("__METADATA__"):
+                    raw = chunk[len("__METADATA__"):]
+                    payload = json.dumps({"metadata": json.loads(raw)})
+                    yield f"data: {payload}\n\n"
+                else:
+                    payload = json.dumps({"content": chunk})
+                    yield f"data: {payload}\n\n"
 
             logger.info(
                 "POST /chat/stream | session=%s stream complete",
@@ -163,8 +171,8 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
         generate(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control":    "no-cache",
-            "Connection":       "keep-alive",
+            "Cache-Control":     "no-cache",
+            "Connection":        "keep-alive",
             "X-Accel-Buffering": "no",
         },
     )

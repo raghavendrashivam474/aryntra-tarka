@@ -1,4 +1,4 @@
-﻿import { useState, KeyboardEvent } from "react";
+﻿import { useState, type KeyboardEvent } from "react";
 
 interface Props {
   onSend: (message: string) => void;
@@ -78,3 +78,4 @@ export default function ChatInput({ onSend, disabled }: Props) {
     </div>
   );
 }
+

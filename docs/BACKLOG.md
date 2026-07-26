@@ -313,7 +313,7 @@ LLM expresses uncertainty after successful tool execution
 
 **Category:** Prompt Engineering
 
-**Status:** Open
+**Status:** Resolved
 
 **Owner:** Unassigned
 
@@ -361,21 +361,38 @@ Multiply 14 by 17
 
 3. Observe generated response.
 
----
-
 ### Notes
 
 Likely requires prompt refinement and explicit success signalling.
 
 ---
 
-# Section 3 â€” Low Priority Bugs
+### Resolution — Sprint 3.4
 
-No low-priority issues have been identified.
+Provider prompt refined in `backend/agent/runtime/runtime.py`.
 
-This section will expand as testing continues.
+Three prompt templates rewritten:
+
+- `_PROMPT_WITH_TOOL` — instructs the model to trust the verified
+  tool result, rephrase it as one natural sentence, and avoid
+  phrases like "let me try", "let me check", or "double-check".
+  Includes concrete examples for calculator, datetime, and
+  filesystem results.
+- `_PROMPT_DIRECT` — uses an example-driven style guide covering
+  greetings, gratitude, farewells, emotional support, and general
+  conversation. Removes meta-instructions to prevent the model
+  from exposing its reasoning.
+- `_PROMPT_TOOL_ERROR` — tightened to avoid excessive apologising.
+
+Regression testing (13 scenarios) confirms confident tool
+responses, natural greetings, concise gratitude, appropriate
+farewells, and empathetic emotional support.
+
+No planner, runtime logic, or tool changes were made.
 
 ---
+
+# Section 3 — Low Priority Bugs
 
 # Section 4 â€” Future Enhancements
 
@@ -531,13 +548,24 @@ An issue is considered complete only when:
 |----|--------|----------|----------|--------|
 | ISSUE-001 | Planner fails to detect short DateTime requests | High | Planner | Resolved |
 | ISSUE-002 | REPL commands processed by the LLM | High | CLI | Resolved |
-| ISSUE-003 | LLM expresses uncertainty after successful tool execution | Medium | Prompt Engineering | Open |
+| ISSUE-003 | LLM expresses uncertainty after successful tool execution | Medium | Prompt Engineering | Resolved |
 | ISSUE-004 | Conversation context not retained between requests | Future Enhancement | Memory | Deferred |
 | ISSUE-005 | Planner cannot execute multiple tools | Future Enhancement | Planner | Deferred |
 
 ---
 
 # Revision History
+
+## Version 1.2 — Sprint 3.4
+
+- ISSUE-003 marked Resolved.
+- Provider prompt refined in backend/agent/runtime/runtime.py.
+- Successful tool outputs now produce confident, concise responses.
+- Greetings, gratitude, farewells, and emotional messages respond naturally.
+- Regression testing (13 scenarios) passed.
+- No planner, runtime logic, or tool changes required.
+
+---
 
 ## Version 1.1 — Sprint 3.3
 

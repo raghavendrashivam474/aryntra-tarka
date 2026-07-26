@@ -241,7 +241,7 @@ REPL commands are processed by the LLM instead of a local dispatcher
 
 **Category:** CLI
 
-**Status:** Open
+**Status:** Resolved
 
 **Owner:** Unassigned
 
@@ -530,7 +530,7 @@ An issue is considered complete only when:
 | ID | Title | Priority | Category | Status |
 |----|--------|----------|----------|--------|
 | ISSUE-001 | Planner fails to detect short DateTime requests | High | Planner | Resolved |
-| ISSUE-002 | REPL commands processed by the LLM | High | CLI | Open |
+| ISSUE-002 | REPL commands processed by the LLM | High | CLI | Resolved |
 | ISSUE-003 | LLM expresses uncertainty after successful tool execution | Medium | Prompt Engineering | Open |
 | ISSUE-004 | Conversation context not retained between requests | Future Enhancement | Memory | Deferred |
 | ISSUE-005 | Planner cannot execute multiple tools | Future Enhancement | Planner | Deferred |
@@ -538,6 +538,16 @@ An issue is considered complete only when:
 ---
 
 # Revision History
+
+## Version 1.1 — Sprint 3.3
+
+- ISSUE-002 marked Resolved.
+- Local command dispatcher implemented in tools/chat_repl.py.
+- Built-in commands: help, clear, cls, exit, quit, version.
+- Commands execute locally with no backend requests.
+- Regression tests passed.
+
+---
 
 ## Version 1.0 â€” Sprint 3.1
 
@@ -550,3 +560,6 @@ An issue is considered complete only when:
 - Added Definition of Done.
 
 ---
+
+
+

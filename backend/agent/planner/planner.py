@@ -3,17 +3,20 @@ agent/planner/planner.py
 Rule-based request planner.
 
 Converts a user message into a structured ExecutionPlan.
-Rules evaluated in order - first match wins.
+Rules evaluated in order — ALL matching rules are collected.
 Calculator checked BEFORE datetime so "times" routes correctly.
+
+Sprint 3.2 — DateTime intent recognition expanded.
+Sprint 3.6 — Multi-tool planning. Planner now collects ALL matching
+             rules rather than stopping at the first match.
+             ExecutionPlanStep introduced for per-tool parameters.
+             ExecutionPlan.steps holds the ordered execution list.
+             ExecutionPlan.tool_name / .parameters retained for
+             backward compatibility with Sprint 3.2 / 3.5 tests.
 
 Pattern conventions:
   "word"    -> whole-word match (\bword\b)
   "prefix*" -> prefix match (\bprefix\w*)
-
-Sprint 3.2 — DateTime intent recognition expanded.
-  Added: "time", "date", "day", "date and time", "today's time",
-         "today's date", "current date", "tell me the time",
-         "tell me the date", "what's the time", "what's the date"
 """
 
 from __future__ import annotations
@@ -27,14 +30,46 @@ from backend.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# ExecutionPlanStep — one tool invocation within a plan
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ExecutionPlanStep:
+    """A single tool invocation within an ExecutionPlan."""
+
+    tool_name:  str
+    parameters: dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# ExecutionPlan — full plan returned by the Planner
+# ---------------------------------------------------------------------------
+
 @dataclass
 class ExecutionPlan:
-    """Structured plan produced by the Planner."""
+    """
+    Structured plan produced by the Planner.
 
-    tool_name: str | None
-    parameters: dict[str, Any] = field(default_factory=dict)
-    reasoning: str = ""
+    Attributes:
+        steps:      Ordered list of tool invocations to execute.
+                    Empty when no tool is needed.
+        tool_name:  First tool name, or None. Retained for backward
+                    compatibility with Sprint 3.2 / 3.5 tests.
+        parameters: First tool parameters, or {}. Retained for
+                    backward compatibility.
+        reasoning:  Human-readable explanation of the planning decision.
+    """
 
+    steps:      list[ExecutionPlanStep] = field(default_factory=list)
+    tool_name:  str | None              = None
+    parameters: dict[str, Any]          = field(default_factory=dict)
+    reasoning:  str                     = ""
+
+
+# ---------------------------------------------------------------------------
+# Math word normalisation
+# ---------------------------------------------------------------------------
 
 # Map English math words to symbolic operators.
 # Longer phrases first so multi-word forms win over single words.
@@ -121,11 +156,9 @@ def _matches(patterns: list, text: str) -> bool:
     """
     for pattern in patterns:
         if pattern.endswith("*"):
-            # Prefix match - word starting with prefix
             prefix = re.escape(pattern[:-1])
             regex = r"\b" + prefix + r"\w*"
         else:
-            # Whole word or exact phrase match
             regex = r"\b" + re.escape(pattern) + r"\b"
 
         if re.search(regex, text):
@@ -138,25 +171,19 @@ def _matches(patterns: list, text: str) -> bool:
 #
 # Calculator MUST come before datetime so "times" does not trigger "time".
 #
-# DateTime patterns — Sprint 3.2 expansion:
-#   Short queries  : "time", "date", "day"
-#   Possessives    : "today's date", "today's time"
-#   Compound       : "date and time", "current date and time"
-#   Conversational : "tell me the time", "what's the time"
-#   Existing       : all original patterns retained unchanged
+# Sprint 3.6: ALL matching rules are collected, not just the first.
+# Order is preserved — steps are appended in rule-list order.
 # ---------------------------------------------------------------------------
 
 _RULES = [
     (
         [
-            # Prefix patterns: match calculate, calculating, calculation, etc.
             "calculat*",
             "comput*",
             "multipl*",
             "divid*",
             "subtract*",
             "evaluat*",
-            # Whole-word patterns
             "math",
             "add",
             "plus",
@@ -171,7 +198,6 @@ _RULES = [
     ),
     (
         [
-            # ── Original patterns (unchanged) ───────────────────────────
             "what time",
             "current time",
             "what day",
@@ -183,20 +209,15 @@ _RULES = [
             "clock",
             "time is",
             "date is",
-            # ── Sprint 3.2 additions ────────────────────────────────────
-            # Single-word short queries
             "time",
             "date",
             "day",
-            # Possessive forms
             "today's date",
             "today's time",
             "current date",
-            # Compound date-and-time requests
             "date and time",
             "current date and time",
             "today's date and time",
-            # Conversational variants
             "tell me the time",
             "tell me the date",
             "tell me the day",
@@ -225,41 +246,75 @@ _RULES = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Planner
+# ---------------------------------------------------------------------------
+
 class Planner:
-    """Rule-based planner. Decides which tool to use. Never executes."""
+    """
+    Rule-based planner.
+
+    Sprint 3.6: Collects ALL matching rules to support multi-tool
+    execution. Single-tool and no-tool cases are handled identically
+    to previous sprints.
+    """
 
     def plan(self, message: str) -> ExecutionPlan:
         """
         Analyse the user message and produce an execution plan.
 
+        All matching rules are evaluated. Steps are added in rule-list
+        order, which mirrors the order tools appear in the request.
+
         Args:
             message: Raw user message string.
 
         Returns:
-            ExecutionPlan with tool selection and parameters.
+            ExecutionPlan with zero, one, or many steps.
         """
         normalised = message.lower().strip()
         logger.info("Planner analysing: '%s'", message)
 
+        steps: list[ExecutionPlanStep] = []
+
         for patterns, tool_name, extractor in _RULES:
             if _matches(patterns, normalised):
                 params = extractor(message)
-                plan = ExecutionPlan(
-                    tool_name=tool_name,
-                    parameters=params,
-                    reasoning=f"Keyword match: '{tool_name}' selected.",
+                steps.append(
+                    ExecutionPlanStep(
+                        tool_name=tool_name,
+                        parameters=params,
+                    )
                 )
                 logger.info(
-                    "Planner: tool='%s' params=%s",
-                    plan.tool_name,
-                    plan.parameters,
+                    "Planner: matched tool='%s' params=%s",
+                    tool_name,
+                    params,
                 )
-                return plan
 
+        if not steps:
+            plan = ExecutionPlan(
+                steps=[],
+                tool_name=None,
+                parameters={},
+                reasoning="No matching tool. Provider responds directly.",
+            )
+            logger.info("Planner: no tool selected, direct response")
+            return plan
+
+        # Backward-compatible fields point to the first step.
         plan = ExecutionPlan(
-            tool_name=None,
-            parameters={},
-            reasoning="No matching tool. Provider responds directly.",
+            steps=steps,
+            tool_name=steps[0].tool_name,
+            parameters=steps[0].parameters,
+            reasoning=(
+                f"{len(steps)} tool(s) matched: "
+                + ", ".join(s.tool_name for s in steps)
+            ),
         )
-        logger.info("Planner: no tool selected, direct response")
+        logger.info(
+            "Planner: %d step(s) planned: %s",
+            len(steps),
+            [s.tool_name for s in steps],
+        )
         return plan

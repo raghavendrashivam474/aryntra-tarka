@@ -6,17 +6,19 @@ Orchestrates the complete request lifecycle:
 
   1. Receive user message
   2. Store user message in conversation memory
-  3. Call Planner      → get ExecutionPlan
-  4. Execute tool      → get tool result     (if plan requires one)
-  5. Build prompt      → embed tool result + conversation history
-  6. Call Provider     → generate natural language response
+  3. Call Planner      -> get ExecutionPlan
+  4. Execute tools     -> get tool results   (single or multi-tool)
+  5. Build prompt      -> embed tool results + conversation history
+  6. Call Provider     -> generate natural language response
   7. Store assistant response in conversation memory
   8. Return response
 
-The runtime is async because OllamaLLMProvider.generate() is async.
-The runtime knows about: Planner, ToolRegistry, BaseLLMProvider,
-ConversationMemory.
-Nothing else.
+Sprint 3.6 — Multi-tool planning.
+  Runtime now iterates over ExecutionPlan.steps.
+  Each step is executed sequentially.
+  Results are aggregated into a single provider prompt.
+  A tool failure does not stop remaining steps.
+  Single-tool and no-tool paths are unchanged.
 """
 
 from backend.utils.logger import get_logger
@@ -32,6 +34,7 @@ logger = get_logger(__name__)
 # Prompt templates
 # Sprint 3.4 — Prompt Engineering Improvements
 # Sprint 3.5 — Conversation context injected where appropriate
+# Sprint 3.6 — Multi-tool prompt template added
 # ---------------------------------------------------------------------------
 
 _PROMPT_WITH_TOOL = """\
@@ -141,6 +144,42 @@ Instructions:
 - Keep the response concise.
 """
 
+# Sprint 3.6 — Multi-tool prompt
+# Receives an aggregated block of tool results and instructs the
+# provider to weave them into one natural response.
+_PROMPT_MULTI_TOOL = """\
+You are Tarka, a helpful AI assistant.
+
+The user asked: "{message}"
+
+The following tools were executed and returned verified results:
+
+{results_block}
+
+Instructions:
+- Every result above is correct. Trust them completely.
+- Write ONE natural, readable response that covers every result.
+- Do not list results with labels such as "Calculator:" or "DateTime:".
+- Weave all results into flowing prose.
+- Do not say "let me check", "let me calculate", "let me look up", \
+or any similar phrase. Everything has already been done.
+- Do not mention tool names.
+- Do not apologise or introduce uncertainty.
+- If a tool reported an error, acknowledge that part politely and \
+briefly, then continue with the results that succeeded.
+
+Examples of the required style:
+- Calculator 200, DateTime Sunday 26 July 2026 ->
+  "25 x 8 equals 200, and today is Sunday, 26 July 2026."
+- DateTime 3:45 PM, Calculator 600 ->
+  "The current time is 3:45 PM, and 50 x 12 equals 600."
+- Filesystem 18 files, DateTime Sunday 26 July 2026 ->
+  "Your Downloads folder contains 18 items, and today is \
+Sunday, 26 July 2026."
+
+Keep the response concise. Do not add filler.
+"""
+
 
 class AgentRuntime:
     """
@@ -188,10 +227,17 @@ class AgentRuntime:
         plan: ExecutionPlan = self.planner.plan(message)
 
         # -- Step 3: Build prompt ----------------------------------------
-        if plan.tool_name is not None:
-            prompt = self._build_tool_prompt(message, plan)
-        else:
+        if not plan.steps:
+            # No tools matched — direct conversation
             prompt = self._build_direct_prompt(message)
+
+        elif len(plan.steps) == 1:
+            # Single tool — original path, unchanged behaviour
+            prompt = self._build_tool_prompt(message, plan)
+
+        else:
+            # Multiple tools — Sprint 3.6 path
+            prompt = self._build_multi_tool_prompt(message, plan)
 
         # -- Step 4: Generate final response -----------------------------
         logger.info("Sending prompt to provider")
@@ -232,11 +278,10 @@ class AgentRuntime:
         self, message: str, plan: ExecutionPlan
     ) -> str:
         """
-        Execute the planned tool and build the provider prompt.
+        Execute the single planned tool and build the provider prompt.
 
         Tool prompts do not inject conversation history because the
-        tool result is authoritative and self-contained. The user
-        asked for a computation or lookup; the result is the answer.
+        tool result is authoritative and self-contained.
 
         Args:
             message: Original user message.
@@ -246,7 +291,7 @@ class AgentRuntime:
             Formatted prompt string for the provider.
         """
         tool_name = plan.tool_name
-        logger.info("Tool selected: '%s'", tool_name)
+        logger.info("Single tool selected: '%s'", tool_name)
 
         try:
             tool_result = self.registry.execute(
@@ -270,3 +315,63 @@ class AgentRuntime:
                 tool_name=tool_name,
                 error=str(exc),
             )
+
+    def _build_multi_tool_prompt(
+        self, message: str, plan: ExecutionPlan
+    ) -> str:
+        """
+        Execute every planned tool sequentially, collect results, and
+        build one aggregated provider prompt.
+
+        A tool failure is recorded but does not stop execution.
+        Remaining tools continue regardless.
+
+        Args:
+            message: Original user message.
+            plan:    Execution plan containing multiple steps.
+
+        Returns:
+            Formatted prompt string for the provider.
+        """
+        logger.info(
+            "Multi-tool execution: %d steps",
+            len(plan.steps),
+        )
+
+        result_lines: list[str] = []
+
+        for step in plan.steps:
+            tool_name = step.tool_name
+            logger.info("Executing step: tool='%s'", tool_name)
+
+            try:
+                result = self.registry.execute(
+                    tool_name, **step.parameters
+                )
+                logger.info(
+                    "Tool '%s' result preview: %.120s",
+                    tool_name,
+                    result,
+                )
+                result_lines.append(f"{tool_name.capitalize()}: {result}")
+
+            except ToolError as exc:
+                logger.error(
+                    "Tool '%s' failed during multi-tool execution: %s",
+                    tool_name,
+                    exc,
+                )
+                result_lines.append(
+                    f"{tool_name.capitalize()}: ERROR — {exc}"
+                )
+
+        results_block = "\n".join(result_lines)
+        logger.info(
+            "Multi-tool results collected:\n%s",
+            results_block,
+        )
+
+        return _PROMPT_MULTI_TOOL.format(
+            message=message,
+            results_block=results_block,
+        )

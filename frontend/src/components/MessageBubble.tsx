@@ -1,4 +1,4 @@
-import React from "react";
+ï»¿import React from "react";
 import MarkdownRenderer from "./MarkdownRenderer";
 
 interface MessageBubbleProps {
@@ -23,7 +23,6 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
         padding: "0 8px",
       }}
     >
-      {/* Avatar — assistant only */}
       {!isUser && (
         <div
           style={{
@@ -47,7 +46,6 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
         </div>
       )}
 
-      {/* Bubble */}
       <div
         style={{
           maxWidth: "72%",
@@ -63,13 +61,18 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
         }}
       >
         {isUser ? (
-          // User messages — plain text
-          <span>{content}</span>
+          <span
+            style={{
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              fontFamily: "inherit",
+            }}
+          >
+            {content}
+          </span>
         ) : (
-          // Assistant messages — markdown rendered
           <>
             <MarkdownRenderer content={content} />
-            {/* Streaming cursor */}
             {isStreaming && (
               <span
                 style={{
@@ -87,7 +90,6 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
         )}
       </div>
 
-      {/* Avatar — user only */}
       {isUser && (
         <div
           style={{

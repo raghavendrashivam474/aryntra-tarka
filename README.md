@@ -1,20 +1,25 @@
-<div align="center">
+﻿<div align="center">
 
-<img src="docs/assets/logo.png" alt="Aryntra Tarka" width="80" />
+<img src="docs/assets/logo.png" alt="Aryntra Tarka" width="96"/>
 
 # Aryntra Tarka
 
-**Autonomous Multi-Tool AI Agent**
+### Transparent Local-First AI Agent
 
-[![Version](https://img.shields.io/badge/version-1.0.0-6366f1?style=flat-square)](CHANGELOG.md)
-[![Sprint](https://img.shields.io/badge/sprint-3.11-22c55e?style=flat-square)](docs/sprints/)
-[![License](https://img.shields.io/badge/license-MIT-white?style=flat-square)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.11+-3b82f6?style=flat-square)](https://python.org)
-[![React](https://img.shields.io/badge/react-18-61dafb?style=flat-square)](https://react.dev)
+Build AI applications that **plan**, **reason**, **invoke tools**, and **stream responses** with complete execution transparency.
 
-[Demo](#demo) · [Quick Start](#quick-start) · [Architecture](docs/ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md)
+Built with **FastAPI**, **React**, **TypeScript**, **SQLite**, and **Ollama**.
 
-<img src="docs/assets/screenshot-conversation.png" alt="Tarka Screenshot" />
+**Version:** v1.0.0 • **Status:** Stable
+
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square)
+![FastAPI](https://img.shields.io/badge/FastAPI-Latest-009688?style=flat-square)
+![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square)
+![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)
+
+**[Quick Start](#quick-start) • [Architecture](docs/ARCHITECTURE.md) • [Documentation](#documentation)**
+
+<img src="docs/assets/screenshot-conversation.png" width="900"/>
 
 </div>
 
@@ -22,254 +27,88 @@
 
 # What is Tarka?
 
-Tarka is a production-ready autonomous AI agent that can **plan**, **reason**, and **execute multi-tool tasks** through a clean, responsive chat interface.
+Aryntra Tarka is a **local-first autonomous AI agent** that converts natural language requests into structured execution plans.
 
-Ask a question. Tarka plans the approach, selects the appropriate tools, executes them in sequence, and streams back a coherent response while transparently showing how the answer was produced.
+Instead of forwarding prompts directly to a language model, Tarka:
+
+- Understands the user's intent
+- Builds an execution plan
+- Invokes the required tools
+- Collects execution results
+- Streams the final response
+- Persists conversation history
+
+The architecture is modular, transparent, and designed for long-term extensibility.
 
 ---
 
 # Features
 
-| Capability | Status |
-|------------|--------|
-| Multi-tool Planning | ✅ |
-| Streaming Responses | ✅ |
-| Persistent Conversations | ✅ |
-| Execution Transparency | ✅ |
-| Tool Execution Badges | ✅ |
-| Syntax Highlighting | ✅ |
-| Session History Sidebar | ✅ |
-| Responsive Interface | ✅ |
-| Copy & Regenerate | ✅ |
-| SQLite Persistence | ✅ |
+- 🧠 Autonomous multi-step planning
+- 🛠 Transparent tool execution
+- ⚡ Real-time streaming responses (SSE)
+- 💾 Persistent conversation history
+- 🤖 Local AI powered by Ollama
+- 📦 Modular layered architecture
+- 🔌 Provider abstraction
+- 🚀 Extensible tool registry
 
 ---
 
-# Demo
-
-Example interaction
+# Architecture Overview
 
 ```text
-You:
-Calculate 125 × 48 and save the result to notes.
-
-Tarka:
-✓ Calculator
-✓ Filesystem
-
-125 × 48 = 6000
-
-The calculation has been completed and the result has been saved successfully.
+User
+   │
+   ▼
+Planner
+   │
+   ▼
+Runtime
+   │
+   ├── Tool Registry
+   ├── Memory
+   └── LLM Provider
+          │
+          ▼
+      Final Response
 ```
+
+The complete architecture, execution flow, and design decisions are documented in:
+
+**docs/ARCHITECTURE.md**
 
 ---
 
-# Quick Start
+# Built-in Tools
 
-## Prerequisites
+| Tool | Purpose |
+|------|---------|
+| Calculator | Mathematical calculations |
+| Date & Time | Current date and time |
+| Filesystem | File and directory operations |
 
-- Python 3.11+
-- Node.js 18+
-- OpenAI or Anthropic API Key
-
----
-
-## 1. Clone Repository
-
-```bash
-git clone https://github.com/aryntra/tarka.git
-cd tarka
-```
-
----
-
-## 2. Backend Setup
-
-```bash
-cd backend
-
-python -m venv .venv
-
-# Windows
-.venv\Scripts\activate
-
-# macOS / Linux
-source .venv/bin/activate
-
-pip install -r requirements.txt
-
-cp ../.env.example .env
-```
-
-Edit `.env`
-
-```env
-OPENAI_API_KEY=your_api_key
-```
-
-Run backend
-
-```bash
-uvicorn main:app --reload --port 8000
-```
-
----
-
-## 3. Frontend Setup
-
-Open another terminal
-
-```bash
-cd frontend
-
-npm install
-
-cp .env.example .env
-```
-
-Edit `.env`
-
-```env
-VITE_API_URL=http://localhost:8000
-```
-
-Run frontend
-
-```bash
-npm run dev
-```
-
----
-
-## 4. Open in Browser
-
-```
-http://localhost:5173
-```
+The Tool Registry is fully extensible, allowing additional tools to be added without modifying the Runtime.
 
 ---
 
 # Screenshots
 
-| View | Asset |
-|------|-------|
-| Home / Empty State | `docs/assets/home.png` |
-| Conversation | `docs/assets/conversation.png` |
-| Tool Badges | `docs/assets/tool-badges.png` |
-| Code Rendering | `docs/assets/code-rendering.png` |
-| Sidebar | `docs/assets/sidebar.png` |
+### Home
 
----
+![Home](docs/assets/home.png)
 
-# Architecture
+### Conversation
 
-```text
-                     Browser
-               (React + Vite)
-                      │
-             HTTP / REST / SSE
-                      │
-                      ▼
-          FastAPI Application Server
-                      │
-      ┌───────────────┴───────────────┐
-      │                               │
-   Planner                      Conversation Memory
-      │                               │
-      └───────────────┬───────────────┘
-                      ▼
-                 Agent Runtime
-                      │
-               Tool Registry
-      ┌─────────┼─────────┬─────────┐
-      │         │         │         │
- Calculator  DateTime  Filesystem  Future Tools
-                      │
-                  SQLite Storage
-```
+![Conversation](docs/assets/conversation.png)
 
-For additional details see:
+### Tool Execution
 
-- `docs/ARCHITECTURE.md`
+![Tool Execution](docs/assets/tool-badges.png)
 
----
+### Settings
 
-# Deployment
-
-## Frontend (Vercel)
-
-```bash
-cd frontend
-npx vercel --prod
-```
-
-Configure
-
-```env
-VITE_API_URL=https://your-backend.onrender.com
-```
-
----
-
-## Backend (Render)
-
-1. Connect GitHub repository.
-2. Render automatically detects `render.yaml`.
-3. Configure environment variables.
-
-```env
-OPENAI_API_KEY=your_api_key
-ALLOWED_ORIGINS=https://your-frontend.vercel.app
-```
-
-Complete deployment guide:
-
-```
-docs/DEPLOYMENT.md
-```
-
----
-
-# Project Structure
-
-```text
-tarka/
-│
-├── backend/
-│   ├── main.py
-│   ├── planner/
-│   ├── runtime/
-│   ├── tools/
-│   ├── memory/
-│   ├── persistence/
-│   ├── api/
-│   └── requirements.txt
-│
-├── frontend/
-│   ├── src/
-│   │   ├── components/
-│   │   ├── pages/
-│   │   ├── hooks/
-│   │   ├── constants/
-│   │   └── App.tsx
-│   ├── package.json
-│   └── vercel.json
-│
-├── docs/
-│   ├── ARCHITECTURE.md
-│   ├── DEPLOYMENT.md
-│   ├── CHANGELOG.md
-│   ├── ROADMAP.md
-│   ├── sprints/
-│   └── assets/
-│
-├── .env.example
-├── render.yaml
-├── CHANGELOG.md
-├── CONTRIBUTING.md
-├── LICENSE
-└── README.md
-```
+![Settings](docs/assets/settings.png)
 
 ---
 
@@ -279,36 +118,92 @@ tarka/
 |--------|------------|
 | Backend | FastAPI |
 | Frontend | React + TypeScript + Vite |
-| AI Providers | OpenAI / Anthropic |
+| AI Provider | Ollama |
 | Database | SQLite |
-| Streaming | Server-Sent Events (SSE) |
+| Streaming | Server-Sent Events |
 | Styling | Tailwind CSS |
-| Markdown | react-markdown |
-| Syntax Highlighting | react-syntax-highlighter |
+
+---
+
+# Quick Start
+
+## Prerequisites
+
+- Python 3.11+
+- Node.js 18+
+- Git
+- Ollama
+
+## Clone
+
+```bash
+git clone https://github.com/<username>/aryntra-tarka.git
+cd aryntra-tarka
+```
+
+## Backend
+
+```bash
+cd backend
+pip install -r requirements.txt
+uvicorn main:app --reload
+```
+
+## Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+## Ollama
+
+```bash
+ollama pull llama3.2
+ollama serve
+```
+
+Open:
+
+```
+http://localhost:5173
+```
+
+---
+
+# Documentation
+
+Detailed documentation is available inside the `docs/` directory.
+
+| Document | Purpose |
+|----------|---------|
+| ARCHITECTURE.md | System architecture |
+| DEPLOYMENT.md | Deployment guide |
+| ROADMAP.md | Future plans |
+| CONTRIBUTING.md | Contribution guide |
+| CHANGELOG.md | Release history |
 
 ---
 
 # Roadmap
 
-## Version 1.0
+## Completed
 
-- ✅ Multi-tool Planning
-- ✅ Streaming Responses
-- ✅ Persistent Memory
-- ✅ SQLite Persistence
-- ✅ Transparent Tool Execution
-- ✅ Modern Chat UI
-- ✅ Responsive Interface
+- ✅ Autonomous planning
+- ✅ Local-first AI
+- ✅ Tool execution
+- ✅ SQLite persistence
+- ✅ Streaming responses
 
-## Future (Version 2)
+## Planned
 
-- File Understanding
-- Web Search
-- Retrieval-Augmented Generation (RAG)
-- Plugin Ecosystem
-- Authentication
-- Voice Interface
-- Image Understanding
+- 🚧 Web Search
+- 🚧 Retrieval-Augmented Generation (RAG)
+- 🚧 File Understanding
+- 🚧 Plugin System
+- 🚧 Multi-provider Support
+- 🚧 Voice Interaction
 
 ---
 
@@ -316,36 +211,46 @@ tarka/
 
 Contributions are welcome.
 
-Please read:
+You can help by:
 
-```
-CONTRIBUTING.md
-```
+- Reporting bugs
+- Improving documentation
+- Adding new tools
+- Suggesting features
+- Opening pull requests
 
-before submitting a pull request.
+Please read **docs/CONTRIBUTING.md** before contributing.
 
 ---
 
 # License
 
-MIT License
+Released under the **MIT License**.
 
-See:
+See the `LICENSE` file for details.
 
-```
-LICENSE
-```
+---
+
+# About the Developer
+
+**Raghavendra Singh**
+
+Computer Science student passionate about AI systems, backend engineering, developer tools, and privacy-first software.
+
+Building the **Aryntra** ecosystem—modular, local-first software designed for transparency and long-term maintainability.
+
+### Connect
+
+- GitHub: https://github.com/raghavendrashivam474
+- LinkedIn: https://www.linkedin.com/in/raghavendra-singh-2335292ab/
+- Portfolio: https://evolution-portfolio.vercel.app
 
 ---
 
 <div align="center">
 
-### Aryntra Tarka
+**Transparent AI. Local First. Built for Developers.**
 
-**Version 1.0.0**
-
-Autonomous Multi-Tool AI Agent
-
-Built with ❤️ using FastAPI, React, TypeScript, and SQLite.
+Made with ❤️ by **Raghavendra Singh**
 
 </div>

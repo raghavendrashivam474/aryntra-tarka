@@ -1,13 +1,13 @@
-﻿r"""
+r"""
 agent/planner/planner.py
 Rule-based request planner.
 
 Converts a user message into a structured ExecutionPlan.
-Rules evaluated in order — ALL matching rules are collected.
+Rules evaluated in order â€” ALL matching rules are collected.
 Calculator checked BEFORE datetime so "times" routes correctly.
 
-Sprint 3.2 — DateTime intent recognition expanded.
-Sprint 3.6 — Multi-tool planning. Planner now collects ALL matching
+Sprint 3.2 â€” DateTime intent recognition expanded.
+Sprint 3.6 â€” Multi-tool planning. Planner now collects ALL matching
              rules rather than stopping at the first match.
              ExecutionPlanStep introduced for per-tool parameters.
              ExecutionPlan.steps holds the ordered execution list.
@@ -31,7 +31,7 @@ logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# ExecutionPlanStep — one tool invocation within a plan
+# ExecutionPlanStep â€” one tool invocation within a plan
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -43,7 +43,7 @@ class ExecutionPlanStep:
 
 
 # ---------------------------------------------------------------------------
-# ExecutionPlan — full plan returned by the Planner
+# ExecutionPlan â€” full plan returned by the Planner
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -172,7 +172,7 @@ def _matches(patterns: list, text: str) -> bool:
 # Calculator MUST come before datetime so "times" does not trigger "time".
 #
 # Sprint 3.6: ALL matching rules are collected, not just the first.
-# Order is preserved — steps are appended in rule-list order.
+# Order is preserved â€” steps are appended in rule-list order.
 # ---------------------------------------------------------------------------
 
 _RULES = [

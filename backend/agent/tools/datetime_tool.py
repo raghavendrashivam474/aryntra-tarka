@@ -1,4 +1,4 @@
-﻿"""
+"""
 agent/tools/datetime_tool.py
 Current date and time information tool.
 """

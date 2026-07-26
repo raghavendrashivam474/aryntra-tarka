@@ -1,4 +1,4 @@
-﻿"""
+"""
 agent/runtime/runtime.py
 Agent Runtime - the heart of Aryntra Tarka.
 

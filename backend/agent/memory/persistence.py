@@ -1,4 +1,4 @@
-﻿"""
+"""
 agent/memory/persistence.py
 SQLite-backed conversation persistence.
 

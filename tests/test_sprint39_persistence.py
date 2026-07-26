@@ -1,4 +1,4 @@
-﻿"""
+"""
 tests/test_sprint39_persistence.py
 Sprint 3.9 — Persistent Conversations & Conversation Quality
 Updated for Sprint 3.9.1 refactored prompts.

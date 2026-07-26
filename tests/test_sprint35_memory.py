@@ -1,4 +1,4 @@
-﻿"""
+"""
 tests/test_sprint35_memory.py
 Sprint 3.5 — Session Memory Regression Tests
 

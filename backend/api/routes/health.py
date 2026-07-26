@@ -1,4 +1,4 @@
-﻿"""
+"""
 Health and root endpoints for Aryntra Tarka.
 
 Responsibilities:
@@ -42,7 +42,7 @@ class HealthResponse(BaseModel):
 async def root() -> RootResponse:
     return RootResponse(
         name="Aryntra Tarka",
-        version="0.2.0",
+        version="1.0.0",
         status="online",
     )
 

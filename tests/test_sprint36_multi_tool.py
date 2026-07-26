@@ -1,4 +1,4 @@
-﻿"""
+"""
 tests/test_sprint36_multi_tool.py
 Sprint 3.6 — Multi-Tool Planning Regression Tests
 

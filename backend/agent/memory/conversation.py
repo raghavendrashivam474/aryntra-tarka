@@ -1,4 +1,4 @@
-﻿"""
+"""
 agent/memory/conversation.py
 Session Conversation Memory — Sprint 3.5
 
@@ -73,7 +73,7 @@ class ConversationMemory:
             self._max_messages,
         )
 
-    # ── Public interface ────────────────────────────────────────────────
+    # -- Public interface ------------------------------------------------
 
     def add_user_message(self, content: str) -> None:
         """
@@ -138,7 +138,7 @@ class ConversationMemory:
         """Return the current number of stored messages."""
         return len(self._history)
 
-    # ── Private helpers ─────────────────────────────────────────────────
+    # -- Private helpers -------------------------------------------------
 
     def _append(self, message: ConversationMessage) -> None:
         """

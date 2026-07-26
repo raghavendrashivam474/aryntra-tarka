@@ -1,13 +1,7 @@
 ﻿"""
 Aryntra Tarka - Application Entry Point
 
-Responsibilities:
-- Initialise the FastAPI application
-- Configure application metadata
-- Register API routers
-- Expose no business or AI logic
-
-Sprint 3.8 - expose_headers added to CORS for SSE streaming support.
+Sprint 3.11 - CORS extended to include Vite dev server (5173).
 """
 
 from fastapi import FastAPI
@@ -16,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.api import api_router
 from backend.config.settings import settings
 from backend.utils.logger import get_logger
+from backend.api.version import router as version_router
 
 logger = get_logger(__name__)
 
@@ -40,6 +35,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -52,5 +49,6 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 
 app.include_router(api_router, prefix="/api")
+app.include_router(version_router)
 
 logger.info("Aryntra Tarka started. Environment: %s", settings.app_env)

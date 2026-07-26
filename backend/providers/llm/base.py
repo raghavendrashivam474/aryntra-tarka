@@ -1,4 +1,4 @@
-﻿"""
+"""
 Abstract LLM provider interface for Aryntra Tarka.
 
 Responsibilities:

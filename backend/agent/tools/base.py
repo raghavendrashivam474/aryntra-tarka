@@ -1,4 +1,4 @@
-﻿"""
+"""
 agent/tools/base.py
 Abstract base class for all agent tools.
 

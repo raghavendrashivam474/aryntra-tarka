@@ -1,4 +1,4 @@
-﻿"""
+"""
 agent/schemas/chat.py
 Pydantic models for the chat API.
 

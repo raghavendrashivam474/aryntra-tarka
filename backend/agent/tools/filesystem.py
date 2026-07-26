@@ -1,4 +1,4 @@
-﻿"""
+"""
 agent/tools/filesystem.py
 Safe read-only filesystem tool.
 

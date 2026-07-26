@@ -1,4 +1,4 @@
-﻿"""
+"""
 agent/services/agent.py
 Application-level service factory.
 

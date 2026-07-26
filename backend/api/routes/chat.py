@@ -1,4 +1,4 @@
-﻿"""
+"""
 api/routes/chat.py
 Chat endpoints for Aryntra Tarka.
 

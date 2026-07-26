@@ -1,4 +1,4 @@
-﻿"""
+"""
 agent/tools/calculator.py
 Safe arithmetic calculator tool.
 

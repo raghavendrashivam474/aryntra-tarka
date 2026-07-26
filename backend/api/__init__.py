@@ -1,4 +1,4 @@
-﻿"""
+"""
 API package for Aryntra Tarka.
 
 Registers all routers and exposes the combined router

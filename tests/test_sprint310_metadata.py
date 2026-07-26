@@ -1,4 +1,4 @@
-﻿"""
+"""
 tests/test_sprint310_metadata.py
 Sprint 3.10 - Execution metadata tests.
 

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Sprint 3.2 - Planner regression test.
 Tests all DateTime routing cases from the acceptance criteria.
 Run from the project root:

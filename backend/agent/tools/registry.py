@@ -1,4 +1,4 @@
-﻿"""
+"""
 agent/tools/registry.py
 Central tool registry.
 

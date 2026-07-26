@@ -1,4 +1,4 @@
-﻿"""
+"""
 Ollama LLM provider for Aryntra Tarka.
 
 Responsibilities:

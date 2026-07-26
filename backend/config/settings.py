@@ -1,4 +1,4 @@
-﻿"""
+"""
 Centralised configuration for Aryntra Tarka.
 
 Responsibilities:
@@ -8,7 +8,6 @@ Responsibilities:
 
 Usage:
     from backend.config.settings import settings
-    print(settings.app_name)
 """
 
 from pydantic_settings import BaseSettings
@@ -22,7 +21,7 @@ class Settings(BaseSettings):
 
     # Application
     app_name: str = "Aryntra Tarka"
-    app_version: str = "0.2.0"
+    app_version: str = "1.0.0"
     app_env: str = "development"
     debug: bool = True
 

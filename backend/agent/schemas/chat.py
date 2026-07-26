@@ -1,34 +1,21 @@
 ﻿"""
 agent/schemas/chat.py
-Request and response models for the chat endpoint.
+Pydantic models for the chat API.
 
-Sprint 3.8 - session_id added to ChatRequest for future persistence.
-             Field is optional with a sensible default so existing
-             callers that omit it continue to work unchanged.
+Sprint 3.9 - session_id added to ChatRequest for persistent conversations.
 """
 
 from pydantic import BaseModel, Field
+import uuid
 
 
 class ChatRequest(BaseModel):
-    """Incoming chat request from the user."""
-
-    message: str = Field(
-        ...,
-        min_length=1,
-        description="The user message sent to the agent.",
-    )
-
+    message: str = Field(..., description="The user message to send to Tarka.")
     session_id: str = Field(
-        default="default",
-        description="Optional session identifier for conversation tracking.",
+        default_factory=lambda: str(uuid.uuid4()),
+        description="Stable session identifier. Frontend should persist this.",
     )
 
 
 class ChatResponse(BaseModel):
-    """Outgoing chat response returned to the user."""
-
-    response: str = Field(
-        ...,
-        description="The agent-generated response.",
-    )
+    response: str = Field(..., description="The assistant response.")

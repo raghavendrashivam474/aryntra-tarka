@@ -44,3 +44,9 @@ htmlcov/
 
 # Configs with secrets
 configs/*.local.yaml
+
+# Sprint 3.9 - SQLite runtime data
+tarka.db
+tarka.db-journal
+test_sprint39.db
+test_sprint39.db-journal

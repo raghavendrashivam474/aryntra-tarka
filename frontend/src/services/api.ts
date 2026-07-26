@@ -18,3 +18,8 @@ export async function sendMessage(message: string): Promise<string> {
   const data: ChatResponse = await response.json();
   return data.response;
 }
+export const getChatHistory = async (sessionId: string) => {
+  const response = await fetch(${API_BASE_URL}/chat/history/);
+  if (!response.ok) throw new Error("Failed to fetch history");
+  return response.json();
+};

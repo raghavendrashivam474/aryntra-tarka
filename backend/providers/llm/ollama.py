@@ -1,11 +1,15 @@
-"""
+﻿"""
 Ollama LLM provider for Aryntra Tarka.
 
 Responsibilities:
 - Implement the BaseLLMProvider interface
 - Communicate with the Ollama API
 - Expose no reasoning or business logic
+
+Sprint 3.8 - generate_stream() implemented using ollama stream=True.
 """
+
+from typing import AsyncIterator
 
 import ollama
 
@@ -28,11 +32,11 @@ class OllamaLLMProvider(BaseLLMProvider):
 
     async def generate(self, prompt: str, model: str | None = None) -> str:
         """
-        Send a prompt to Ollama and return the text response.
+        Send a prompt to Ollama and return the complete text response.
 
         Args:
             prompt: The input text to send to the model.
-            model: Optional model override.
+            model:  Optional model override.
 
         Returns:
             The model response as a plain string.
@@ -46,6 +50,39 @@ class OllamaLLMProvider(BaseLLMProvider):
         )
 
         return response.response
+
+    async def generate_stream(
+        self,
+        prompt: str,
+        model: str | None = None,
+    ) -> AsyncIterator[str]:
+        """
+        Send a prompt to Ollama and stream response chunks as they arrive.
+
+        Uses the Ollama stream=True parameter which causes the client
+        to yield partial response objects. Each object carries a
+        response field containing the latest token or token group.
+
+        Args:
+            prompt: The input text to send to the model.
+            model:  Optional model override.
+
+        Yields:
+            String chunks as they arrive from Ollama.
+        """
+        target_model = model or self.model
+        logger.debug("Streaming response. Model: %s", target_model)
+
+        stream = await self.client.generate(
+            model=target_model,
+            prompt=prompt,
+            stream=True,
+        )
+
+        async for chunk in stream:
+            token = chunk.get("response", "")
+            if token:
+                yield token
 
     async def ping(self) -> bool:
         """

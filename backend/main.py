@@ -6,6 +6,8 @@ Responsibilities:
 - Configure application metadata
 - Register API routers
 - Expose no business or AI logic
+
+Sprint 3.8 - expose_headers added to CORS for SSE streaming support.
 """
 
 from fastapi import FastAPI
@@ -42,6 +44,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # ---------------------------------------------------------------------------

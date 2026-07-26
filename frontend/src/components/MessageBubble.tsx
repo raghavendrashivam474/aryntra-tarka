@@ -1,11 +1,18 @@
-ï»¿import type { Message } from "../types";
+import React from "react";
+import MarkdownRenderer from "./MarkdownRenderer";
 
-interface Props {
-  message: Message;
+interface MessageBubbleProps {
+  role: "user" | "assistant";
+  content: string;
+  isStreaming?: boolean;
 }
 
-export default function MessageBubble({ message }: Props) {
-  const isUser = message.role === "user";
+const MessageBubble: React.FC<MessageBubbleProps> = ({
+  role,
+  content,
+  isStreaming = false,
+}) => {
+  const isUser = role === "user";
 
   return (
     <div
@@ -13,24 +20,98 @@ export default function MessageBubble({ message }: Props) {
         display: "flex",
         justifyContent: isUser ? "flex-end" : "flex-start",
         marginBottom: "12px",
+        padding: "0 8px",
       }}
     >
+      {/* Avatar — assistant only */}
+      {!isUser && (
+        <div
+          style={{
+            width: "32px",
+            height: "32px",
+            borderRadius: "50%",
+            background: "#6366f1",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: "14px",
+            fontWeight: 700,
+            color: "#fff",
+            flexShrink: 0,
+            marginRight: "10px",
+            alignSelf: "flex-start",
+            marginTop: "4px",
+          }}
+        >
+          T
+        </div>
+      )}
+
+      {/* Bubble */}
       <div
         style={{
-          maxWidth: "70%",
+          maxWidth: "72%",
           padding: "12px 16px",
-          borderRadius: isUser ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
-          backgroundColor: isUser ? "#2563eb" : "#f1f5f9",
-          color: isUser ? "#ffffff" : "#1e293b",
-          fontSize: "15px",
-          lineHeight: "1.5",
-          boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
-          whiteSpace: "pre-wrap",
+          borderRadius: isUser ? "18px 18px 4px 18px" : "4px 18px 18px 18px",
+          background: isUser ? "#6366f1" : "#1f2937",
+          color: isUser ? "#ffffff" : "#e5e7eb",
+          fontSize: "14px",
+          lineHeight: "1.6",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+          position: "relative",
           wordBreak: "break-word",
         }}
       >
-        {message.content}
+        {isUser ? (
+          // User messages — plain text
+          <span>{content}</span>
+        ) : (
+          // Assistant messages — markdown rendered
+          <>
+            <MarkdownRenderer content={content} />
+            {/* Streaming cursor */}
+            {isStreaming && (
+              <span
+                style={{
+                  display: "inline-block",
+                  width: "2px",
+                  height: "14px",
+                  background: "#6366f1",
+                  marginLeft: "2px",
+                  verticalAlign: "middle",
+                  animation: "blink 1s step-end infinite",
+                }}
+              />
+            )}
+          </>
+        )}
       </div>
+
+      {/* Avatar — user only */}
+      {isUser && (
+        <div
+          style={{
+            width: "32px",
+            height: "32px",
+            borderRadius: "50%",
+            background: "#374151",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: "14px",
+            fontWeight: 700,
+            color: "#9ca3af",
+            flexShrink: 0,
+            marginLeft: "10px",
+            alignSelf: "flex-start",
+            marginTop: "4px",
+          }}
+        >
+          U
+        </div>
+      )}
     </div>
   );
-}
+};
+
+export default MessageBubble;

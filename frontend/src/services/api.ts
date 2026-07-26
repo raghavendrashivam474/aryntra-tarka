@@ -1,4 +1,9 @@
-﻿import type { ChatResponse, ExecutionMetadata } from "../types";
+﻿// services/api.ts
+// Sprint 3.12 — onStageUpdate callback added to sendMessageStreaming.
+// Parses stage_event SSE chunks and forwards them to the caller.
+// Existing onChunk, onDone, onError signatures unchanged.
+
+import type { ChatResponse, ExecutionMetadata, ExecutionStageEvent } from "../types";
 
 const API_BASE = "http://localhost:8000";
 
@@ -23,7 +28,8 @@ export async function sendMessageStreaming(
   sessionId: string,
   onChunk: (chunk: string) => void,
   onDone: (metadata?: ExecutionMetadata) => void,
-  onError: (error: string) => void
+  onError: (error: string) => void,
+  onStageUpdate?: (event: ExecutionStageEvent) => void
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/api/chat/stream`, {
     method: "POST",
@@ -57,23 +63,36 @@ export async function sendMessageStreaming(
     for (const line of lines) {
       if (!line.startsWith("data: ")) continue;
       const raw = line.slice(6).trim();
+
       if (raw === "[DONE]") {
         onDone(finalMetadata);
         return;
       }
+
       try {
         const parsed = JSON.parse(raw);
+
         if (parsed.error) {
           onError(parsed.error);
           return;
         }
+
+        // Sprint 3.12 — execution stage event
+        if (parsed.stage_event && onStageUpdate) {
+          onStageUpdate(parsed.stage_event as ExecutionStageEvent);
+          continue;
+        }
+
         if (parsed.metadata) {
           finalMetadata = parsed.metadata as ExecutionMetadata;
-        } else if (parsed.content !== undefined) {
+          continue;
+        }
+
+        if (parsed.content !== undefined) {
           onChunk(parsed.content);
         }
       } catch {
-        // malformed chunk - skip
+        // malformed chunk — skip
       }
     }
   }

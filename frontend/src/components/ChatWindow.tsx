@@ -1,9 +1,15 @@
-﻿import React, { useState, useRef, useEffect, useCallback } from "react";
+﻿// components/ChatWindow.tsx
+// Sprint 3.12 — AgentTimeline wired in. TypingIndicator replaced by
+// AgentTimeline when execution stages are available. Stages cleared
+// after streaming completes and are stored per in-flight message only.
+
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import MessageBubble from "./MessageBubble";
+import AgentTimeline from "./AgentTimeline";
 import TypingIndicator from "./TypingIndicator";
 import { EmptyState } from "./EmptyState";
 import { sendMessageStreaming, sendMessage } from "../services/api";
-import type { ExecutionMetadata } from "../types";
+import type { ExecutionMetadata, ExecutionStageEvent } from "../types";
 
 interface Message {
   id: string;
@@ -29,19 +35,23 @@ function getOrCreateSessionId(): string {
 const USE_STREAMING = true;
 
 const ChatWindow: React.FC = () => {
-  const [sessionId, setSessionId] = useState<string>(getOrCreateSessionId);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState("");
-  const [isThinking, setIsThinking] = useState(false);
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [streamingId, setStreamingId] = useState<string | null>(null);
+  const [sessionId, setSessionId]       = useState<string>(getOrCreateSessionId);
+  const [messages, setMessages]         = useState<Message[]>([]);
+  const [input, setInput]               = useState("");
+  const [isThinking, setIsThinking]     = useState(false);
+  const [isStreaming, setIsStreaming]    = useState(false);
+  const [error, setError]               = useState<string | null>(null);
+  const [streamingId, setStreamingId]   = useState<string | null>(null);
   const [historyLoaded, setHistoryLoaded] = useState(false);
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const shouldAutoScroll = useRef(true);
-  const containerRef = useRef<HTMLDivElement>(null);
+  // Sprint 3.12 — execution timeline state
+  const [activeStages, setActiveStages]     = useState<ExecutionStageEvent[]>([]);
+  const [timelineActive, setTimelineActive] = useState(false);
+
+  const messagesEndRef    = useRef<HTMLDivElement>(null);
+  const inputRef          = useRef<HTMLTextAreaElement>(null);
+  const shouldAutoScroll  = useRef(true);
+  const containerRef      = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = useCallback(() => {
     if (shouldAutoScroll.current) {
@@ -83,13 +93,15 @@ const ChatWindow: React.FC = () => {
     return () => { cancelled = true; };
   }, [sessionId]);
 
-  // Listen for session changes from sidebar (custom event)
+  // Listen for session changes from sidebar
   useEffect(() => {
     const handler = (e: CustomEvent<string>) => {
       localStorage.setItem(SESSION_STORAGE_KEY, e.detail);
       setSessionId(e.detail);
       setError(null);
       setInput("");
+      setActiveStages([]);
+      setTimelineActive(false);
       shouldAutoScroll.current = true;
     };
     window.addEventListener("tarka:select-session", handler as EventListener);
@@ -106,6 +118,8 @@ const ChatWindow: React.FC = () => {
       setMessages([]);
       setError(null);
       setInput("");
+      setActiveStages([]);
+      setTimelineActive(false);
       shouldAutoScroll.current = true;
     };
     window.addEventListener("tarka:new-chat", handler);
@@ -114,7 +128,7 @@ const ChatWindow: React.FC = () => {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, isThinking, scrollToBottom]);
+  }, [messages, isThinking, activeStages, scrollToBottom]);
 
   const handleScroll = () => {
     const container = containerRef.current;
@@ -165,6 +179,8 @@ const ChatWindow: React.FC = () => {
     });
 
     setError(null);
+    setActiveStages([]);
+    setTimelineActive(false);
     shouldAutoScroll.current = true;
 
     if (USE_STREAMING) {
@@ -176,6 +192,11 @@ const ChatWindow: React.FC = () => {
 
   const handleStreamingResponse = async (message: string) => {
     setIsThinking(true);
+
+    // Reset timeline for this request
+    setActiveStages([]);
+    setTimelineActive(true);
+
     const assistantId = generateId();
     let firstChunk = true;
 
@@ -183,6 +204,8 @@ const ChatWindow: React.FC = () => {
       await sendMessageStreaming(
         message,
         sessionId,
+
+        // onChunk
         (chunk: string) => {
           if (firstChunk) {
             firstChunk = false;
@@ -203,10 +226,14 @@ const ChatWindow: React.FC = () => {
             );
           }
         },
+
+        // onDone
         (metadata?: ExecutionMetadata) => {
           setIsThinking(false);
           setIsStreaming(false);
           setStreamingId(null);
+          setTimelineActive(false);
+          // Keep stages visible but mark as inactive (all checks shown)
           if (metadata) {
             setMessages((prev) =>
               prev.map((msg) =>
@@ -214,23 +241,38 @@ const ChatWindow: React.FC = () => {
               )
             );
           }
+          // Clear timeline after a short pause so the user sees completion
+          setTimeout(() => setActiveStages([]), 2000);
         },
+
+        // onError
         (errorMessage: string) => {
           setIsThinking(false);
           setIsStreaming(false);
           setStreamingId(null);
+          setTimelineActive(false);
+          setActiveStages([]);
           setError(errorMessage);
           setMessages((prev) =>
             prev.filter(
               (msg) => !(msg.id === assistantId && msg.content === "")
             )
           );
+        },
+
+        // onStageUpdate — Sprint 3.12
+        (event: ExecutionStageEvent) => {
+          setActiveStages((prev) => [...prev, event]);
+          // When first stage arrives, stop the plain thinking indicator
+          setIsThinking(false);
         }
       );
     } catch (err) {
       setIsThinking(false);
       setIsStreaming(false);
       setStreamingId(null);
+      setTimelineActive(false);
+      setActiveStages([]);
       setError(err instanceof Error ? err.message : "Unexpected error");
     }
   };
@@ -258,6 +300,12 @@ const ChatWindow: React.FC = () => {
   };
 
   const disabled = isThinking || isStreaming;
+
+  // ── Whether to show the timeline ─────────────────────────────────────
+  // Show when we have stages OR when we are still in the plain thinking
+  // state before the first stage arrives.
+  const showTimeline = activeStages.length > 0;
+  const showTypingIndicator = isThinking && !showTimeline;
 
   return (
     <>
@@ -320,7 +368,7 @@ const ChatWindow: React.FC = () => {
             scrollbarColor: "#374151 transparent",
           }}
         >
-          {messages.length === 0 && !isThinking && historyLoaded ? (
+          {messages.length === 0 && !isThinking && !showTimeline && historyLoaded ? (
             <EmptyState onPrompt={(text) => handleSend(text)} />
           ) : (
             <>
@@ -335,7 +383,47 @@ const ChatWindow: React.FC = () => {
                   disabled={disabled}
                 />
               ))}
-              {isThinking && <TypingIndicator />}
+
+              {/* Sprint 3.12 — Agent execution timeline */}
+              {showTimeline && (
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "flex-start",
+                    padding: "0 8px",
+                    marginBottom: "12px",
+                  }}
+                >
+                  {/* Tarka avatar — aligned with assistant bubbles */}
+                  <div
+                    style={{
+                      width: "32px",
+                      height: "32px",
+                      borderRadius: "50%",
+                      background: "#6366f1",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: "14px",
+                      fontWeight: 700,
+                      color: "#fff",
+                      flexShrink: 0,
+                      marginRight: "10px",
+                      alignSelf: "flex-start",
+                      marginTop: "4px",
+                    }}
+                  >
+                    T
+                  </div>
+                  <AgentTimeline
+                    stages={activeStages}
+                    isActive={timelineActive}
+                  />
+                </div>
+              )}
+
+              {/* Plain typing indicator before first stage arrives */}
+              {showTypingIndicator && <TypingIndicator />}
             </>
           )}
           <div ref={messagesEndRef} />

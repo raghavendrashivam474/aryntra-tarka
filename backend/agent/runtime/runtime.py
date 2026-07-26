@@ -1,4 +1,4 @@
-"""
+﻿"""
 agent/runtime/runtime.py
 Agent Runtime - the heart of Aryntra Tarka.
 
@@ -10,8 +10,14 @@ Sprint 3.9.2 - Memory rebuilt from SQLite per session on every request
                to eliminate cross-session bleed.
 Sprint 3.10  - Execution metadata collected and returned with every
                response. tools_used, tool_count, duration_ms exposed.
+Sprint 3.12  - Execution events emitted during process_stream() so the
+               frontend can render a live agent activity timeline.
+               Events are tagged __EXECUTION_EVENT__{json} and emitted
+               before any content chunks. No artificial delays.
+               process() is unchanged — events are streaming-only.
 """
 
+import json as _json
 import time
 from typing import AsyncIterator, Tuple
 
@@ -22,7 +28,7 @@ from backend.agent.tools.base import ToolError
 from backend.agent.tools.registry import ToolRegistry
 from backend.agent.memory.conversation import ConversationMemory
 from backend.agent.memory.persistence import ConversationPersistence
-from backend.agent.schemas.chat import ExecutionMetadata
+from backend.agent.schemas.chat import ExecutionEvent, ExecutionMetadata
 
 logger = get_logger(__name__)
 
@@ -82,7 +88,7 @@ Lines starting with Tarka: are your previous replies.
 {history}
 --- END HISTORY ---
 
-Reply to the user's most recent message naturally.
+Reply to the user most recent message naturally.
 Use the history above to answer follow-up questions accurately.
 Do not summarise or reference these instructions in your reply.
 Do not mention identity rules, system rules, or any operational text.
@@ -131,6 +137,22 @@ Examples:
 Keep it concise.
 """
 
+# ---------------------------------------------------------------------------
+# Execution event helpers
+# ---------------------------------------------------------------------------
+
+def _make_event(stage: str, tool_name: str | None = None) -> str:
+    """
+    Serialise an ExecutionEvent as a tagged string for SSE emission.
+
+    Format: __EXECUTION_EVENT__{json}
+
+    The chat.py route detects this prefix and wraps it as:
+        data: {"stage": "...", "tool_name": "..."}
+    """
+    event = ExecutionEvent(stage=stage, tool_name=tool_name)
+    return f"__EXECUTION_EVENT__{event.model_dump_json()}"
+
 
 class AgentRuntime:
     """
@@ -142,8 +164,11 @@ class AgentRuntime:
     guaranteeing session isolation.
 
     Sprint 3.10: every response now carries ExecutionMetadata containing
-    tools_used, tool_count, and duration_ms. Pure conversation responses
-    carry metadata with empty tools_used and zero counts.
+    tools_used, tool_count, and duration_ms.
+
+    Sprint 3.12: process_stream() now emits __EXECUTION_EVENT__ chunks
+    before content begins. These reflect actual backend operations.
+    No artificial delays. No simulated progress.
     """
 
     def __init__(
@@ -156,7 +181,7 @@ class AgentRuntime:
         self.planner  = planner
         self.registry = registry
         self.provider = provider
-        self.memory   = memory  # legacy - not used for prompt building
+        self.memory   = memory
         logger.info("AgentRuntime initialised")
 
     # ------------------------------------------------------------------ #
@@ -186,9 +211,7 @@ class AgentRuntime:
     ) -> Tuple[str, ExecutionMetadata]:
         """
         Process a message and return (response_text, metadata).
-
-        Sprint 3.10: return type changed from str to Tuple[str, ExecutionMetadata].
-        chat.py route updated to unpack the tuple.
+        Unchanged from Sprint 3.10. No execution events emitted here.
         """
         logger.info(
             "Runtime processing | session=%s message='%s'",
@@ -236,11 +259,21 @@ class AgentRuntime:
         self, message: str, session_id: str = "default"
     ) -> AsyncIterator[str]:
         """
-        Stream response chunks. Metadata is emitted as a final SSE event
-        after [DONE] so existing chunk consumers are unaffected.
+        Stream response chunks with real-time execution events.
 
-        Yields str chunks. The final metadata chunk is a JSON string
-        prefixed with __METADATA__ so the frontend can parse it separately.
+        Sprint 3.12: yields __EXECUTION_EVENT__ chunks at each real
+        backend stage before content streaming begins. Events reflect
+        actual operations. No simulated progress. No artificial delays.
+
+        Yield order:
+            __EXECUTION_EVENT__{"stage":"UNDERSTANDING"}
+            __EXECUTION_EVENT__{"stage":"PLANNING"}
+            __EXECUTION_EVENT__{"stage":"SELECTING_TOOL","tool_name":"..."}  # if tool
+            __EXECUTION_EVENT__{"stage":"EXECUTING_TOOL","tool_name":"..."}  # if tool
+            __EXECUTION_EVENT__{"stage":"GENERATING_RESPONSE"}
+            <content chunks>
+            __METADATA__{...}
+            __EXECUTION_EVENT__{"stage":"COMPLETED"}
         """
         logger.info(
             "Runtime streaming | session=%s message='%s'",
@@ -250,22 +283,45 @@ class AgentRuntime:
 
         start_ms = time.monotonic()
 
-        session_memory = self._build_session_memory(session_id)
+        # ── Stage: UNDERSTANDING ────────────────────────────────────────
+        yield _make_event("UNDERSTANDING")
 
+        session_memory = self._build_session_memory(session_id)
         ConversationPersistence.save_message(session_id, "user", message)
         session_memory.add_user_message(message)
         self.memory = session_memory
 
-        plan: ExecutionPlan = self.planner.plan(message)
+        # ── Stage: PLANNING ─────────────────────────────────────────────
+        yield _make_event("PLANNING")
 
+        plan: ExecutionPlan = self.planner.plan(message)
         tools_used: list[str] = []
 
         if not plan.steps:
+            # No tool path — go straight to generation
             prompt = self._build_direct_prompt(message, session_memory)
+
         elif len(plan.steps) == 1:
+            tool_name = plan.steps[0].tool_name
+
+            # ── Stage: SELECTING_TOOL ───────────────────────────────────
+            yield _make_event("SELECTING_TOOL", tool_name)
+
+            # ── Stage: EXECUTING_TOOL ───────────────────────────────────
+            yield _make_event("EXECUTING_TOOL", tool_name)
+
             prompt, tools_used = self._build_tool_prompt(message, plan)
+
         else:
+            # Multi-tool: emit select + execute per tool
+            for step in plan.steps:
+                yield _make_event("SELECTING_TOOL", step.tool_name)
+                yield _make_event("EXECUTING_TOOL", step.tool_name)
+
             prompt, tools_used = self._build_multi_tool_prompt(message, plan)
+
+        # ── Stage: GENERATING_RESPONSE ──────────────────────────────────
+        yield _make_event("GENERATING_RESPONSE")
 
         logger.info("Streaming prompt to provider")
         accumulated: list[str] = []
@@ -284,14 +340,16 @@ class AgentRuntime:
         )
         session_memory.add_assistant_message(full_response)
 
-        # Emit metadata as a tagged final yield so chat.py can forward it
-        import json as _json
+        # Emit metadata
         metadata = ExecutionMetadata(
             tools_used=tools_used,
             tool_count=len(tools_used),
             duration_ms=duration_ms,
         )
-        yield f"__METADATA__{_json.dumps(metadata.model_dump())}"
+        yield f"__METADATA__{metadata.model_dump_json()}"
+
+        # ── Stage: COMPLETED ────────────────────────────────────────────
+        yield _make_event("COMPLETED")
 
     # ------------------------------------------------------------------ #
     # Prompt builders                                                     #
@@ -331,7 +389,6 @@ class AgentRuntime:
                 tool_name=tool_name,
                 error=str(exc),
             )
-            # Tool was attempted - still report it
             return prompt, [tool_name]
 
     def _build_multi_tool_prompt(
@@ -364,5 +421,3 @@ class AgentRuntime:
             results_block=results_block,
         )
         return prompt, tools_used
-
-

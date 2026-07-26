@@ -1,4 +1,4 @@
-"""
+﻿"""
 api/routes/chat.py
 Chat endpoints for Aryntra Tarka.
 
@@ -8,6 +8,8 @@ Sprint 3.9   - session_id wired through, GET /history/{session_id}
 Sprint 3.9.2 - GET /sessions, DELETE /sessions/{session_id}
 Sprint 3.10  - Execution metadata attached to ChatResponse.
                Streaming route emits metadata as final SSE event.
+Sprint 3.12  - Streaming route forwards __EXECUTION_EVENT__ chunks as
+               SSE stage events. Frontend parses and renders timeline.
 """
 
 import json
@@ -26,6 +28,9 @@ logger = get_logger(__name__)
 init_db()
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
+
+_EXECUTION_EVENT_PREFIX = "__EXECUTION_EVENT__"
+_METADATA_PREFIX        = "__METADATA__"
 
 
 # ---------------------------------------------------------------------------
@@ -146,11 +151,19 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
                 request.message,
                 session_id=request.session_id,
             ):
-                # Runtime emits a tagged metadata chunk as the final yield
-                if chunk.startswith("__METADATA__"):
-                    raw = chunk[len("__METADATA__"):]
+                # ── Execution event ─────────────────────────────────────
+                if chunk.startswith(_EXECUTION_EVENT_PREFIX):
+                    raw = chunk[len(_EXECUTION_EVENT_PREFIX):]
+                    payload = json.dumps({"stage_event": json.loads(raw)})
+                    yield f"data: {payload}\n\n"
+
+                # ── Metadata ────────────────────────────────────────────
+                elif chunk.startswith(_METADATA_PREFIX):
+                    raw = chunk[len(_METADATA_PREFIX):]
                     payload = json.dumps({"metadata": json.loads(raw)})
                     yield f"data: {payload}\n\n"
+
+                # ── Content chunk ───────────────────────────────────────
                 else:
                     payload = json.dumps({"content": chunk})
                     yield f"data: {payload}\n\n"

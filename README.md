@@ -178,11 +178,11 @@ Detailed documentation is available inside the `docs/` directory.
 
 | Document | Purpose |
 |----------|---------|
-| ARCHITECTURE.md | System architecture |
-| DEPLOYMENT.md | Deployment guide |
-| ROADMAP.md | Future plans |
-| CONTRIBUTING.md | Contribution guide |
-| CHANGELOG.md | Release history |
+| `docs/ARCHITECTURE.md` | System architecture |
+| `docs/DEPLOYMENT.md` | Deployment guide |
+| `docs/ROADMAP.md` | Future plans |
+| `CONTRIBUTING.md` | Contribution guide |
+| `CHANGELOG.md` | Release history |
 
 ---
 
@@ -219,7 +219,7 @@ You can help by:
 - Suggesting features
 - Opening pull requests
 
-Please read **docs/CONTRIBUTING.md** before contributing.
+Please read `CONTRIBUTING.md` before contributing.
 
 ---
 

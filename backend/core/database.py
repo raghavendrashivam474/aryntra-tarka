@@ -1,7 +1,7 @@
-import sqlite3
 import os
+import sqlite3
 
-DB_PATH = "tarka.db"
+DB_PATH = os.getenv("SQLITE_DB_PATH", "tarka.db")
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)

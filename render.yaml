@@ -20,8 +20,8 @@ services:
         sync:  false
       - key:   ANTHROPIC_API_KEY
         sync:  false
-      - key:   DATABASE_URL
-        value: sqlite:///./tarka.db
+      - key: SQLITE_DB_PATH
+        value: /data/tarka.db
       - key:   ENVIRONMENT
         value: production
       - key:   ALLOWED_ORIGINS

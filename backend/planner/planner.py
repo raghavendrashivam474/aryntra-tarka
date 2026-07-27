@@ -1,6 +1,11 @@
 ﻿"""
 Intelligent Planner - Sprint 3.15
 Selects tools, prepares inputs, chains multiple tools.
+
+Sprint 3.15 bug fix — password heuristic now runs before the math check.
+Root cause: looks_like_math() matches any digit, so inputs like
+"Generate a 20 character password" were incorrectly routed to calculator.
+Fix: password detection is evaluated first in _detect_single_tool().
 """
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Any, Optional
@@ -112,39 +117,11 @@ Rules:
     def _detect_single_tool(self, text: str) -> Optional[Plan]:
         low = text.lower()
 
-        # Math
-        if ExpressionNormalizer.looks_like_math(text):
-            expr = ExpressionNormalizer.normalize(text) or text
-            return Plan(steps=[PlanStep(
-                tool="calculator",
-                inputs={"expression": expr},
-                reason="Detected mathematical expression.")],
-                strategy="single")
-
-        # Weather
-        m = re.search(r'\bweather\s+(?:in|for|at)\s+([A-Za-z ,]+)', low)
-        if m:
-            return Plan(steps=[PlanStep(
-                tool="weather",
-                inputs={"location": m.group(1).strip().rstrip('?.!')},
-                reason="Weather request detected.")],
-                strategy="single")
-
-        # Date/time
-        if re.search(r'\b(what(?:\'s| is) )?(the )?(current )?(time|date|day)\b', low):
-            return Plan(steps=[PlanStep(
-                tool="datetime", inputs={},
-                reason="Date/time request.")], strategy="single")
-
-        # Search / news
-        if re.search(r'\b(latest|today\'s|current|news|breaking)\b', low):
-            return Plan(steps=[PlanStep(
-                tool="search",
-                inputs={"query": text.rstrip('?.!')},
-                reason="Current information request.")],
-                strategy="single")
-
-        # Password
+        # ── Password ──────────────────────────────────────────────────────
+        # Must run BEFORE the math check.
+        # looks_like_math() matches any digit, so "Generate a 20 character
+        # password" would otherwise be routed to calculator. Password intent
+        # is unambiguous and takes priority.
         if re.search(r'\b(generate|create|make).*\bpassword\b', low):
             length_match = re.search(r'(\d{1,3})\s*(?:chars?|characters?|long)?', low)
             length = int(length_match.group(1)) if length_match else 16
@@ -154,7 +131,39 @@ Rules:
                 reason="Password generation request.")],
                 strategy="single")
 
-        # Clipboard
+        # ── Math ──────────────────────────────────────────────────────────
+        if ExpressionNormalizer.looks_like_math(text):
+            expr = ExpressionNormalizer.normalize(text) or text
+            return Plan(steps=[PlanStep(
+                tool="calculator",
+                inputs={"expression": expr},
+                reason="Detected mathematical expression.")],
+                strategy="single")
+
+        # ── Weather ───────────────────────────────────────────────────────
+        m = re.search(r'\bweather\s+(?:in|for|at)\s+([A-Za-z ,]+)', low)
+        if m:
+            return Plan(steps=[PlanStep(
+                tool="weather",
+                inputs={"location": m.group(1).strip().rstrip('?.!')},
+                reason="Weather request detected.")],
+                strategy="single")
+
+        # ── Date / time ───────────────────────────────────────────────────
+        if re.search(r'\b(what(?:\'s| is) )?(the )?(current )?(time|date|day)\b', low):
+            return Plan(steps=[PlanStep(
+                tool="datetime", inputs={},
+                reason="Date/time request.")], strategy="single")
+
+        # ── Search / news ─────────────────────────────────────────────────
+        if re.search(r'\b(latest|today\'s|current|news|breaking)\b', low):
+            return Plan(steps=[PlanStep(
+                tool="search",
+                inputs={"query": text.rstrip('?.!')},
+                reason="Current information request.")],
+                strategy="single")
+
+        # ── Clipboard ─────────────────────────────────────────────────────
         if re.search(r'\bclipboard\b', low):
             action = "write" if re.search(r'\b(copy|write|set)\b', low) else "read"
             return Plan(steps=[PlanStep(
@@ -163,7 +172,7 @@ Rules:
                 reason="Clipboard interaction.")],
                 strategy="single")
 
-        # System info
+        # ── System info ───────────────────────────────────────────────────
         if re.search(r'\b(cpu|ram|memory|os|system info|uptime|disk)\b', low):
             return Plan(steps=[PlanStep(
                 tool="system_info", inputs={},
@@ -176,13 +185,17 @@ Rules:
         low = text.lower()
 
         # Weather + convert to Fahrenheit/Celsius
-        m = re.search(r'weather\s+(?:in|for|at)\s+([A-Za-z ,]+?)(?:\s+and\s+convert.*?(fahrenheit|celsius))',
-                      low)
+        m = re.search(
+            r'weather\s+(?:in|for|at)\s+([A-Za-z ,]+?)'
+            r'(?:\s+and\s+convert.*?(fahrenheit|celsius))',
+            low,
+        )
         if m:
             location = m.group(1).strip()
-            target = m.group(2)
+            target   = m.group(2)
             steps = [
-                PlanStep(tool="weather", inputs={"location": location},
+                PlanStep(tool="weather",
+                         inputs={"location": location},
                          reason="Fetch current weather."),
                 PlanStep(tool="calculator",
                          inputs={"expression": "<weather.temp_c> * 9/5 + 32"
@@ -215,8 +228,8 @@ Rules:
     def _llm_plan(self, text: str) -> Optional[Plan]:
         try:
             system = self.build_system_prompt()
-            resp = self.llm.complete(system=system, prompt=text)
-            data = self._extract_json(resp)
+            resp   = self.llm.complete(system=system, prompt=text)
+            data   = self._extract_json(resp)
             if not data:
                 return None
             steps = [PlanStep(**s) for s in data.get("steps", [])]

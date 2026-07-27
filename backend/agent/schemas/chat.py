@@ -7,6 +7,10 @@ Sprint 3.10 - ExecutionMetadata added. ChatResponse extended with
               optional metadata field. Existing clients unaffected.
 Sprint 3.12 - ExecutionEvent added. Emitted by runtime during streaming
               to expose execution stages to the frontend in real time.
+Sprint 3.16 - New orchestration stages added: EXECUTING_STEP_N,
+              COMPLETED_STEP_N, GENERATING_FINAL_RESPONSE.
+              ExecutionMetadata extended with steps_completed and
+              steps_failed counters.
 """
 
 from typing import List, Literal, Optional
@@ -23,8 +27,13 @@ ExecutionStage = Literal[
     "PLANNING",
     "SELECTING_TOOL",
     "EXECUTING_TOOL",
+    "EXECUTING_STEP",
+    "COMPLETED_STEP",
     "GENERATING_RESPONSE",
+    "GENERATING_FINAL_RESPONSE",
     "COMPLETED",
+    "FAILED_STEP",
+    "PARTIAL_FAILURE",
 ]
 
 
@@ -35,7 +44,8 @@ class ExecutionEvent(BaseModel):
     Emitted as a tagged SSE chunk: __EXECUTION_EVENT__{json}
     The frontend parses this and updates the live timeline.
 
-    tool_name is only populated for SELECTING_TOOL and EXECUTING_TOOL stages.
+    tool_name is only populated for tool-related stages.
+    step is only populated for EXECUTING_STEP and COMPLETED_STEP.
     """
 
     stage: ExecutionStage = Field(
@@ -44,12 +54,20 @@ class ExecutionEvent(BaseModel):
     )
     tool_name: Optional[str] = Field(
         default=None,
-        description="Tool name. Only present for SELECTING_TOOL and EXECUTING_TOOL.",
+        description="Tool name. Only present for tool-related stages.",
+    )
+    step: Optional[int] = Field(
+        default=None,
+        description="Step number. Only present for EXECUTING_STEP / COMPLETED_STEP.",
+    )
+    total_steps: Optional[int] = Field(
+        default=None,
+        description="Total steps in plan. Present for step-level events.",
     )
 
 
 # ---------------------------------------------------------------------------
-# Existing models — unchanged
+# Existing models — extended, not replaced
 # ---------------------------------------------------------------------------
 
 class ExecutionMetadata(BaseModel):
@@ -66,6 +84,14 @@ class ExecutionMetadata(BaseModel):
     duration_ms: int = Field(
         default=0,
         description="Total execution duration in milliseconds.",
+    )
+    steps_completed: int = Field(
+        default=0,
+        description="Number of plan steps that completed successfully.",
+    )
+    steps_failed: int = Field(
+        default=0,
+        description="Number of plan steps that failed.",
     )
 
 

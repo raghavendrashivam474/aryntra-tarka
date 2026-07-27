@@ -1,22 +1,38 @@
 ﻿"""
 intelligent_planner.py
 ======================
-Replaces the naive planner with a full orchestration-aware planning layer.
+Sprint 3.15.1 — Planner Stabilization
 
-Responsibilities
-----------------
-  1. Build a dynamic system prompt from the tool registry.
-  2. Call the LLM with temperature=0 for deterministic output.
-  3. Extract and parse the JSON execution plan from the response.
-  4. Validate all tool names against the registry.
-  5. Normalize calculator expressions via the expression normalizer.
-  6. Return a typed ExecutionPlan ready for the runtime.
+Changes from Sprint 3.15
+------------------------
+  - IntentClassifier is consulted BEFORE any tool routing decision.
+  - EXPLANATION intent short-circuits directly to fallback (LLM direct).
+  - GENERAL intent short-circuits directly to fallback (LLM direct).
+  - All other logic preserved exactly.
+
+Request flow
+------------
+  User message
+       │
+       ▼
+  IntentClassifier
+       │
+       ├── EXPLANATION / GENERAL  ──►  ExecutionPlan.fallback_plan()
+       │
+       └── CALCULATION / DATETIME / WEATHER / ...
+               │
+               ▼
+          LLM Planner (temperature=0)
+               │
+               ▼
+          _parse_plan  →  _post_process  →  ExecutionPlan
 
 Constraints
 -----------
-  - Does NOT modify the runtime, streaming engine, or any tool implementation.
+  - Does NOT modify the runtime, streaming engine, or any tool.
   - Falls back gracefully on any parsing or LLM failure.
   - Retries once before falling back.
+  - No breaking changes to ExecutionPlan schema.
 """
 
 from __future__ import annotations
@@ -27,15 +43,20 @@ import re
 from typing import Any
 
 from backend.planner.execution_plan import ExecutionPlan, PlanStep
+from backend.planner.intent_classifier import (
+    classify_intent,
+    EXPLANATION,
+    GENERAL,
+)
 from backend.planner.normalizers.expression_normalizer import normalize_expression
 from backend.planner.prompt_builder import build_planner_system_prompt
 from backend.planner.tool_metadata import get_all_tool_metadata
 
 logger = logging.getLogger(__name__)
 
-_MAX_RETRIES         = 2
-_HISTORY_WINDOW      = 6            # number of prior messages to include
-_JSON_BLOCK_PATTERN  = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
+_MAX_RETRIES        = 2
+_HISTORY_WINDOW     = 6
+_JSON_BLOCK_PATTERN = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
 
 
 # =============================================================================
@@ -47,11 +68,17 @@ class IntelligentPlanner:
     Orchestration-aware planner that routes every request through
     the appropriate tool chain.
 
+    Sprint 3.15.1: Intent classification runs first. Conceptual and
+    general questions never enter the tool routing pipeline.
+
     Usage
     -----
         planner = IntelligentPlanner(llm_provider)
         plan    = await planner.plan("What is 15% of 340?")
         # -> ExecutionPlan(plan=[PlanStep(tool="calculator", ...)], fallback=False)
+
+        plan = await planner.plan("How does a calculator work?")
+        # -> ExecutionPlan(fallback=True, reasoning="Conceptual question ...")
     """
 
     def __init__(self, llm_provider: Any) -> None:
@@ -72,21 +99,38 @@ class IntelligentPlanner:
 
         Args:
             user_message         : Raw user input.
-            conversation_history : Optional list of {"role": ..., "content": ...}
-                                   dicts for conversational context.
+            conversation_history : Optional prior conversation context.
 
         Returns:
             ExecutionPlan — either a tool chain or a fallback plan.
         """
         logger.info("[Planner] Planning request: %.80s", user_message)
 
+        # ------------------------------------------------------------------
+        # Stage 1 — Intent classification (zero LLM cost)
+        # ------------------------------------------------------------------
+        intent = classify_intent(user_message)
+        logger.info("[Planner] Intent: %s", intent)
+
+        if intent.type in (EXPLANATION, GENERAL):
+            logger.info(
+                "[Planner] Intent=%s → short-circuit to LLM direct. Reason: %s",
+                intent.type, intent.reason,
+            )
+            return ExecutionPlan.fallback_plan(
+                f"Intent classified as {intent.type}: {intent.reason}"
+            )
+
+        # ------------------------------------------------------------------
+        # Stage 2 — LLM-based tool planning
+        # ------------------------------------------------------------------
         messages = self._build_messages(user_message, conversation_history)
 
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
-                raw        = await self._call_llm(messages)
-                plan       = self._parse_plan(raw)
-                plan       = self._post_process(plan)
+                raw  = await self._call_llm(messages)
+                plan = self._parse_plan(raw)
+                plan = self._post_process(plan)
 
                 logger.info(
                     "[Planner] Plan ready — tools=%s fallback=%s attempt=%d",
@@ -130,7 +174,7 @@ class IntelligentPlanner:
     async def _call_llm(self, messages: list[dict[str, str]]) -> str:
         response = await self._llm.chat(
             messages    = messages,
-            temperature = 0.0,   # deterministic
+            temperature = 0.0,
             max_tokens  = 1024,
         )
 
@@ -165,7 +209,6 @@ class IntelligentPlanner:
         if match:
             return match.group(1).strip()
 
-        # Fallback: find outermost { ... }
         start = raw.find("{")
         end   = raw.rfind("}")
         if start != -1 and end > start:
@@ -192,7 +235,10 @@ class IntelligentPlanner:
                 raise ValueError(f"Step {i+1} has no tool name.")
 
             if tool_name not in self._tool_registry:
-                logger.warning("[Planner] Unknown tool '%s' in step %d — skipping.", tool_name, i+1)
+                logger.warning(
+                    "[Planner] Unknown tool '%s' in step %d — skipping.",
+                    tool_name, i + 1,
+                )
                 continue
 
             steps.append(PlanStep(

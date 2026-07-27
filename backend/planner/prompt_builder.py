@@ -1,8 +1,15 @@
 ﻿"""
 prompt_builder.py
 =================
-Dynamically generates the planner system prompt from the tool registry.
+Sprint 3.15.1 — Added verified result protection section.
 
+Changes from Sprint 3.15
+------------------------
+  - Added _RESULT_PROTECTION section instructing the LLM to never
+    rewrite numeric values returned by tools.
+  - All existing sections preserved exactly.
+
+Dynamically generates the planner system prompt from the tool registry.
 Nothing here is hardcoded.
 Every tool section is derived from TOOL_METADATA at call time.
 """
@@ -33,7 +40,34 @@ _CORE_RULES = """\
 3. For multi-step requests, include every required tool in the plan array.
 4. Use "fallback: true" ONLY when absolutely no tool is applicable.
 5. Normalize ALL natural language before passing it to the calculator.
-6. Be deterministic — identical requests must produce identical plans.\
+6. Be deterministic — identical requests must produce identical plans.
+7. Conceptual and educational questions (how, why, explain, what does X mean)
+   must use "fallback: true" — never route them to the calculator.\
+"""
+
+_RESULT_PROTECTION = """\
+## Verified Tool Result Protection
+
+When a tool returns a numeric result, you MUST preserve it exactly.
+
+Rules:
+  - NEVER rewrite, round, or approximate a tool-returned number.
+  - NEVER substitute your own calculation for a tool result.
+  - The tool result is ground truth. Your role is to present it, not recompute it.
+  - If the calculator returns "29.7", your response must contain "29.7" — not "30",
+    not "29", not "39.7", not any other value.
+  - You may add explanation and context around the number, but the number itself
+    is immutable once the tool has returned it.
+
+Example — CORRECT:
+  Calculator returned: 33% of 90 = 29.7
+  Your response: "33% of 90 is 29.7."
+
+Example — INCORRECT:
+  Calculator returned: 33% of 90 = 29.7
+  Your response: "33% of 90 is approximately 30." ← FORBIDDEN
+  Your response: "33% of 90 is 39.7."             ← FORBIDDEN
+  Your response: "The answer is around 30."        ← FORBIDDEN\
 """
 
 _NORMALIZATION_RULES = """\
@@ -48,7 +82,12 @@ When preparing calculator inputs, apply these transformations:
   half of 98                       98 / 2
   a third of 60                    60 / 3
   quarter of 80                    80 / 4
+  a quarter of 40                  40 / 4
+  three quarters of 80             80 * (3 / 4)
+  two thirds of 90                 90 * (2 / 3)
   square root of 81                sqrt(81)
+  find the sqrt of 625             sqrt(625)
+  calculate sqrt of 49             sqrt(49)
   2 raised to the power 8          2 ^ 8
   2 to the power of 8              2 ^ 8
   three plus four                  3 + 4
@@ -57,6 +96,37 @@ When preparing calculator inputs, apply these transformations:
 
 NEVER pass raw natural language into the calculator.
 ALWAYS normalize before including the expression parameter.\
+"""
+
+_CONCEPTUAL_GUARD = """\
+## Conceptual Question Guard
+
+The following question types must ALWAYS use "fallback: true".
+They require explanation, not computation.
+
+Patterns that indicate a conceptual question:
+  - "How does ... work?"
+  - "Explain ..."
+  - "What is the formula for ...?"
+  - "What does ... mean?"
+  - "What is recursion / an algorithm / a concept?"
+  - "Why does ...?"
+  - "Describe ..."
+  - "Tell me about ..."
+  - "What is the difference between ...?"
+  - "What is the theory of ...?"
+
+Examples:
+  "How does a calculator work?"        -> fallback: true
+  "What is the formula for percentage?" -> fallback: true
+  "Explain recursion"                  -> fallback: true
+  "What does power mean in maths?"     -> fallback: true
+  "Why is the sky blue?"               -> fallback: true
+
+Compare with computation requests that DO use tools:
+  "15% of 340"                         -> calculator
+  "find the sqrt of 625"               -> calculator
+  "a quarter of 40"                    -> calculator\
 """
 
 _MULTI_TOOL_GUIDANCE = """\
@@ -148,12 +218,14 @@ def _build_tool_section() -> str:
         lines.append("\n**Parameters:**")
         for pname, pinfo in tool["parameters"].items():
             req_tag = "(required)" if pinfo.get("required") else "(optional)"
-            lines.append(f"  - `{pname}` {req_tag} [{pinfo['type']}]: {pinfo['description']}")
+            lines.append(
+                f"  - `{pname}` {req_tag} [{pinfo['type']}]: {pinfo['description']}"
+            )
             if "examples" in pinfo:
                 ex = ", ".join(f'"{e}"' for e in pinfo["examples"][:3])
                 lines.append(f"    Examples: {ex}")
 
-        lines.append("")  # blank line between tools
+        lines.append("")
 
     return "\n".join(lines)
 
@@ -167,7 +239,9 @@ def _build_priority_section() -> str:
         lines.append(f"  {t['priority']}. **{t['display_name']}** — {t['description']}")
 
     llm_pos = len(tools) + 1
-    lines.append(f"  {llm_pos}. **LLM Response** — Only when none of the above apply.")
+    lines.append(
+        f"  {llm_pos}. **LLM Response** — Only when none of the above apply."
+    )
     return "\n".join(lines)
 
 
@@ -181,11 +255,17 @@ def build_planner_system_prompt() -> str:
 
     Called fresh on each planning request so it always reflects
     the current state of the tool registry.
+
+    Sprint 3.15.1: includes result protection and conceptual guard sections.
     """
     sections = [
         _HEADER,
         "",
         _CORE_RULES,
+        "",
+        _RESULT_PROTECTION,
+        "",
+        _CONCEPTUAL_GUARD,
         "",
         _build_tool_section(),
         "",

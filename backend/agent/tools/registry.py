@@ -1,12 +1,13 @@
-"""
+﻿"""
 agent/tools/registry.py
 Central tool registry.
 
-Responsibilities:
-  register()   – add a tool instance.
-  get()        – retrieve a tool by name.
-  list_tools() – return all registered tool names.
-  execute()    – find and execute a tool by name.
+Sprint 3.16 - Added execute_structured() which returns a dict instead of
+              a plain string. Tools that implement execute_structured()
+              return their native dict. Tools that do not implement it
+              fall back to execute() and wrap the string in {"result": str}.
+              The orchestration layer uses structured results for variable
+              substitution. The original execute() contract is unchanged.
 """
 
 from typing import Any
@@ -33,28 +34,17 @@ class ToolRegistry:
         """
         Register a tool instance.
 
-        Args:
-            tool: Any object implementing BaseTool.
-
         Raises:
             ValueError: If a tool with the same name is already registered.
         """
         if tool.name in self._tools:
-            raise ValueError(
-                f"Tool '{tool.name}' is already registered."
-            )
+            raise ValueError(f"Tool '{tool.name}' is already registered.")
         self._tools[tool.name] = tool
         logger.info("Tool registered: '%s'", tool.name)
 
     def get(self, name: str) -> BaseTool:
         """
         Retrieve a tool by name.
-
-        Args:
-            name: Tool name.
-
-        Returns:
-            The matching BaseTool instance.
 
         Raises:
             ToolError: If no tool with that name exists.
@@ -71,13 +61,13 @@ class ToolRegistry:
         """Return a sorted list of all registered tool names."""
         return sorted(self._tools.keys())
 
+    def has_tool(self, name: str) -> bool:
+        """Return True if a tool with this name is registered."""
+        return name in self._tools
+
     def execute(self, name: str, **kwargs: Any) -> str:
         """
         Find a tool by name and execute it.
-
-        Args:
-            name:     Tool name.
-            **kwargs: Parameters forwarded to tool.execute().
 
         Returns:
             Tool output as a string.
@@ -99,3 +89,49 @@ class ToolRegistry:
 
         logger.info("Tool '%s' completed successfully", name)
         return result
+
+    def execute_structured(self, name: str, **kwargs: Any) -> dict[str, Any]:
+        """
+        Execute a tool and return a structured dict result.
+
+        Sprint 3.16: If the tool implements execute_structured(), call it
+        directly. Otherwise fall back to execute() and wrap the string
+        result in {"result": str, "formatted": str}.
+
+        This keeps backward compatibility — no tool is required to
+        implement execute_structured().
+
+        Returns:
+            Structured dict always. Never raises on missing method.
+
+        Raises:
+            ToolError: If the tool is not found or execution fails.
+        """
+        tool = self.get(name)
+        logger.info(
+            "Executing tool (structured): '%s' | params=%s", name, kwargs
+        )
+
+        try:
+            if hasattr(tool, "execute_structured"):
+                result = tool.execute_structured(**kwargs)
+                logger.info(
+                    "Tool '%s' returned structured result | keys=%s",
+                    name,
+                    list(result.keys()),
+                )
+                return result
+            else:
+                # Fallback — wrap plain string result
+                raw = tool.execute(**kwargs)
+                logger.info(
+                    "Tool '%s' fallback to string result", name
+                )
+                return {"result": raw, "formatted": raw}
+
+        except ToolError:
+            raise
+        except Exception as exc:
+            raise ToolError(
+                f"Unexpected error in tool '{name}': {exc}"
+            ) from exc

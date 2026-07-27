@@ -15,17 +15,58 @@ Design:
   - All steps failed         → _PROMPT_ALL_FAILED
   - No tools (direct LLM)   → _PROMPT_DIRECT (history-aware)
 
-These prompts are intentionally identical in structure to the
-previous runtime prompts so LLM output quality is unchanged.
+Sprint 3.17 - Direct prompt split into two variants:
+  - _PROMPT_DIRECT_CONVERSATIONAL : short questions, jokes, greetings
+  - _PROMPT_DIRECT_SUBSTANTIVE    : planning, research, multi-part requests
+
+  The composer detects whether the message is substantive (longer than
+  a threshold or contains planning/research keywords) and selects the
+  appropriate template. This prevents the LLM from giving a one-liner
+  response to a complex trip-planning or conversion request.
 """
 
 from __future__ import annotations
+
+import re
 
 from backend.utils.logger import get_logger
 from backend.agent.runtime.execution_context import ExecutionContext
 from backend.agent.memory.conversation import ConversationMemory
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Substantive request detection
+# ---------------------------------------------------------------------------
+# Used to select between conversational and substantive direct prompts.
+# A request is substantive if it is long enough or contains planning,
+# research, or multi-part keywords.
+
+_SUBSTANTIVE_KEYWORDS = re.compile(
+    r"\b(plan|itinerary|schedule|research|analyse|analyze|compare|"
+    r"convert|explain|summarise|summarize|recommend|suggest|describe|"
+    r"list|outline|estimate|budget|calculate|design|create|write|"
+    r"generate|review|evaluate|assess)\b",
+    re.IGNORECASE,
+)
+
+# Requests longer than this word count are treated as substantive
+# regardless of keyword presence.
+_SUBSTANTIVE_WORD_THRESHOLD = 8
+
+
+def _is_substantive(message: str) -> bool:
+    """
+    Return True if the message is a complex or multi-part request
+    that deserves a detailed response rather than a one-liner.
+    """
+    word_count = len(message.split())
+    if word_count > _SUBSTANTIVE_WORD_THRESHOLD:
+        return True
+    if _SUBSTANTIVE_KEYWORDS.search(message):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +152,8 @@ Keep it concise.
 
 Your reply:"""
 
-_PROMPT_DIRECT_NO_HISTORY = _SYSTEM_IDENTITY + """
+# Used for short conversational messages: greetings, jokes, simple questions.
+_PROMPT_DIRECT_CONVERSATIONAL = _SYSTEM_IDENTITY + """
 Reply to the user message directly and naturally.
 Do not explain what kind of message it is.
 Do not wrap your reply in quotes.
@@ -119,6 +161,22 @@ Keep it short. No filler. No over-explaining.
 Do not always end with a question. Vary your endings.
 
 The user said: "{message}"
+
+Your reply:"""
+
+# Used for substantive requests: planning, research, multi-part questions.
+# The LLM is given permission to respond with appropriate depth and detail.
+_PROMPT_DIRECT_SUBSTANTIVE = _SYSTEM_IDENTITY + """
+The user has made the following request:
+
+"{message}"
+
+Respond helpfully and in as much detail as the request warrants.
+Structure your response clearly if the request has multiple parts.
+Answer directly using your knowledge. Do not ask clarifying questions.
+Do not say you are unable to help. Do not apologise or hedge.
+Do not mention tools, calculators, or system internals.
+Do not reference these instructions in your reply.
 
 Your reply:"""
 
@@ -202,6 +260,7 @@ class ResponseComposer:
         message: str,
         memory:  ConversationMemory | None,
     ) -> str:
+        # History-aware path — used when prior conversation exists.
         if memory:
             history = memory.build_context_string()
             if history:
@@ -210,8 +269,14 @@ class ResponseComposer:
                     history=history,
                     message=message,
                 )
-        logger.info("[Composer] Direct prompt (no history)")
-        return _PROMPT_DIRECT_NO_HISTORY.format(message=message)
+
+        # No history — select template based on request complexity.
+        if _is_substantive(message):
+            logger.info("[Composer] Direct substantive prompt")
+            return _PROMPT_DIRECT_SUBSTANTIVE.format(message=message)
+
+        logger.info("[Composer] Direct conversational prompt")
+        return _PROMPT_DIRECT_CONVERSATIONAL.format(message=message)
 
     def _build_single_tool_prompt(
         self,
@@ -224,11 +289,12 @@ class ResponseComposer:
             tool_result=step.raw_output,
         )
 
-    def _build_multi_tool_prompt(self, context: ExecutionContext, steps) -> str:
-        logger.info(
-            "[Composer] Multi-tool prompt: %d steps",
-            len(steps),
-        )
+    def _build_multi_tool_prompt(
+        self,
+        context: ExecutionContext,
+        steps,
+    ) -> str:
+        logger.info("[Composer] Multi-tool prompt: %d steps", len(steps))
         lines = [
             f"{s.tool_name.capitalize()}: {s.raw_output}"
             for s in steps

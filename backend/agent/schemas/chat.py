@@ -7,10 +7,13 @@ Sprint 3.10 - ExecutionMetadata added. ChatResponse extended with
               optional metadata field. Existing clients unaffected.
 Sprint 3.12 - ExecutionEvent added. Emitted by runtime during streaming
               to expose execution stages to the frontend in real time.
-Sprint 3.16 - New orchestration stages added: EXECUTING_STEP_N,
-              COMPLETED_STEP_N, GENERATING_FINAL_RESPONSE.
+Sprint 3.16 - New orchestration stages added: EXECUTING_STEP,
+              COMPLETED_STEP, GENERATING_FINAL_RESPONSE.
               ExecutionMetadata extended with steps_completed and
               steps_failed counters.
+Sprint 3.17 - Goal-level stages added: EXECUTING_GOAL, COMPLETED_GOAL,
+              FAILED_GOAL. Emitted once per goal during multi-goal
+              decomposition runs. Existing stage values unchanged.
 """
 
 from typing import List, Literal, Optional
@@ -23,6 +26,7 @@ import uuid
 # ---------------------------------------------------------------------------
 
 ExecutionStage = Literal[
+    # ── Existing stages (Sprint 3.12 / 3.16) ────────────────────────────
     "UNDERSTANDING",
     "PLANNING",
     "SELECTING_TOOL",
@@ -34,6 +38,14 @@ ExecutionStage = Literal[
     "COMPLETED",
     "FAILED_STEP",
     "PARTIAL_FAILURE",
+    # ── Goal-level stages (Sprint 3.17) ──────────────────────────────────
+    # Emitted once per goal when the runtime processes a decomposed request.
+    # EXECUTING_GOAL fires when a goal begins planning + execution.
+    # COMPLETED_GOAL fires when a goal finishes without error.
+    # FAILED_GOAL    fires when a goal's plan execution raises an exception.
+    "EXECUTING_GOAL",
+    "COMPLETED_GOAL",
+    "FAILED_GOAL",
 ]
 
 
@@ -44,8 +56,18 @@ class ExecutionEvent(BaseModel):
     Emitted as a tagged SSE chunk: __EXECUTION_EVENT__{json}
     The frontend parses this and updates the live timeline.
 
-    tool_name is only populated for tool-related stages.
-    step is only populated for EXECUTING_STEP and COMPLETED_STEP.
+    Fields populated per stage:
+
+        EXECUTING_STEP / COMPLETED_STEP / FAILED_STEP
+            tool_name, step, total_steps
+
+        EXECUTING_GOAL / COMPLETED_GOAL / FAILED_GOAL
+            goal_id, total_goals  (injected into the raw JSON payload
+            by _make_event in runtime.py — not part of this model so
+            that existing clients reading only known fields are unaffected)
+
+        All other stages
+            No optional fields populated.
     """
 
     stage: ExecutionStage = Field(

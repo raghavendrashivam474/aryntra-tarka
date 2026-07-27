@@ -26,6 +26,12 @@ Consumed by:
 
 Produces:
     list[Goal]
+
+Changes:
+    Sprint 3.17 patch 1 — strip trailing punctuation from each segment.
+    Connector-based splitting leaves artefacts such as trailing commas:
+    "Plan a 3-day itinerary for Tokyo," — the comma is not part of the
+    goal description and confuses downstream intent classification.
 """
 
 import re
@@ -114,6 +120,11 @@ class GoalDecomposer:
         Split the request string into raw text segments using connector
         keywords as boundaries.
 
+        Trailing punctuation is stripped from each segment after splitting.
+        Connector splitting leaves artefacts such as a trailing comma on
+        the segment before "then": "Plan a 3-day itinerary for Tokyo,"
+        The comma is not part of the goal description — strip it.
+
         Args:
             request: Raw user input.
 
@@ -123,7 +134,14 @@ class GoalDecomposer:
         """
         pattern  = "|".join(re.escape(c) for c in GOAL_CONNECTORS)
         segments = re.split(pattern, request, flags=re.IGNORECASE)
-        cleaned  = [s.strip() for s in segments if s.strip()]
+
+        # Strip whitespace then trailing punctuation then whitespace again.
+        # Two-pass strip is required: "Tokyo, " -> "Tokyo," -> "Tokyo".
+        cleaned = [
+            s.strip().rstrip(",.!?;:").strip()
+            for s in segments
+            if s.strip()
+        ]
 
         # Guard: if splitting produced nothing, return the original request
         # as a single segment so decompose() always returns at least one goal.

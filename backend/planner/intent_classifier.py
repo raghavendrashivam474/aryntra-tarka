@@ -15,6 +15,15 @@ Sprint 3.15.1 patch 1
           The bare "today" datetime pattern is tightened to require
           a time/date noun alongside it.
 
+Sprint 3.17 patch 1
+-------------------
+  Fix 3: Removed "day" from the strong datetime pattern.
+          "\b(current\s+)?(time|date|day|month|year)\b" matched the word
+          "day" inside compound adjectives such as "3-day itinerary",
+          incorrectly routing trip-planning goals to the datetime tool.
+          "day" as a standalone time query is still caught by the
+          "what's today / the date" pattern and the weak today gate.
+
 All other logic preserved exactly.
 """
 
@@ -98,11 +107,11 @@ _CALCULATION_PATTERNS: list[re.Pattern] = [
 ]
 
 # ---------------------------------------------------------------------------
-# Fix 1: Search patterns
+# Search patterns
 # ---------------------------------------------------------------------------
-# Pattern A: explicit search verb — highest confidence, checked early
-# Pattern B: recency word + optional gap + news noun (allows "Latest AI news")
-# Pattern C: live data signals (price, score, ranking)
+# Pattern A: explicit search verb — highest confidence, checked early.
+# Pattern B: recency word + optional gap + news noun (allows "Latest AI news").
+# Pattern C: live data signals (price, score, ranking).
 
 _SEARCH_VERB_PATTERN = re.compile(
     r"\b(search|look\s+up|find\s+out\s+about)\b",
@@ -110,7 +119,7 @@ _SEARCH_VERB_PATTERN = re.compile(
 )
 
 _SEARCH_PATTERNS: list[re.Pattern] = [
-    # recency word ... news noun — allows up to 5 words between them
+    # recency word ... news noun — allows up to 40 chars between them
     re.compile(
         r"\b(latest|breaking|current|recent|today'?s?)\b.{0,40}"
         r"\b(news|events?|updates?|stories|headlines?)\b",
@@ -121,43 +130,61 @@ _SEARCH_PATTERNS: list[re.Pattern] = [
 ]
 
 # ---------------------------------------------------------------------------
-# Fix 2: Datetime patterns — tightened so bare "today" without a time/date
-# noun does NOT fire when a search verb is also present.
-# The bare-"today" pattern is now only matched in the datetime gate AFTER
-# confirming no search verb precedes it.
+# Datetime patterns
 # ---------------------------------------------------------------------------
+# Sprint 3.17 fix: "day" removed from the strong pattern.
+#
+# Before: r"\b(current\s+)?(time|date|day|month|year)\b"
+# After:  r"\b(current\s+)?(time|date|month|year)\b"
+#
+# Reason: "\bday\b" matched inside compound adjectives like "3-day itinerary"
+# because a hyphen is a word boundary in regex. This caused trip-planning
+# goals to be misrouted to the datetime tool.
+#
+# "What day is it?" and "What's today?" are still caught by:
+#   - _DATETIME_STRONG_PATTERNS[1]: r"\bwhat('?s|\s+is)\s+(today|the\s+time|the\s+date)\b"
+#   - _DATETIME_WEAK_TODAY:         r"\btoday\b"
+# So no legitimate datetime query loses coverage.
 
-# Strong datetime: explicit time/date noun present
 _DATETIME_STRONG_PATTERNS: list[re.Pattern] = [
-    re.compile(r"\b(current\s+)?(time|date|day|month|year)\b", re.I),
+    # "time", "date", "month", "year" — "day" intentionally excluded (see above)
+    re.compile(r"\b(current\s+)?(time|date|month|year)\b", re.I),
     re.compile(r"\bwhat('?s|\s+is)\s+(today|the\s+time|the\s+date)\b", re.I),
     re.compile(r"\bright\s+now\b", re.I),
 ]
 
-# Weak datetime: bare "today" — only used when no search verb present
+# Weak datetime: bare "today" — only reached after search verb check above.
 _DATETIME_WEAK_TODAY = re.compile(r"\btoday\b", re.I)
 
-# Weather signals
+# ---------------------------------------------------------------------------
+# Weather patterns
+# ---------------------------------------------------------------------------
 _WEATHER_PATTERNS: list[re.Pattern] = [
     re.compile(r"\bweather\b", re.I),
     re.compile(r"\b(temperature|humidity|forecast|raining|sunny|cold|hot|wind)\b", re.I),
     re.compile(r"\bweather\s+(in|at|for)\b", re.I),
 ]
 
-# File system signals
+# ---------------------------------------------------------------------------
+# File system patterns
+# ---------------------------------------------------------------------------
 _FILE_PATTERNS: list[re.Pattern] = [
     re.compile(r"\b(read|write|save|open|delete|list|rename)\s+(file|files|directory|folder)\b", re.I),
     re.compile(r"\bfile\s+(at|in|from|called|named)\b", re.I),
     re.compile(r"\b(\/[a-z]|[A-Z]:\\)", re.I),
 ]
 
-# Password signals
+# ---------------------------------------------------------------------------
+# Password patterns
+# ---------------------------------------------------------------------------
 _PASSWORD_PATTERNS: list[re.Pattern] = [
     re.compile(r"\b(generate|create|make|give\s+me)\b.{0,30}\bpassword\b", re.I),
     re.compile(r"\bpassword\b.{0,20}\b(generate|create|random|secure|strong)\b", re.I),
 ]
 
-# System info signals
+# ---------------------------------------------------------------------------
+# System info patterns
+# ---------------------------------------------------------------------------
 _SYSTEM_PATTERNS: list[re.Pattern] = [
     re.compile(r"\b(cpu|ram|memory|disk\s+space|operating\s+system|os|uptime|system\s+info)\b", re.I),
 ]
@@ -172,16 +199,16 @@ class IntentClassifier:
     Rule-based intent classifier.
 
     Priority order (highest first):
-      1. EXPLANATION  — conceptual phrasing overrides everything
-      2. CALCULATION  — numeric/compute intent
+      1. EXPLANATION   — conceptual phrasing overrides everything
+      2. CALCULATION   — numeric/compute intent
       3. SEARCH (verb) — explicit search verb checked before datetime
-      4. DATETIME     — time/date queries
-      5. WEATHER      — weather queries
+      4. DATETIME      — time/date queries
+      5. WEATHER       — weather queries
       6. SEARCH (noun) — recency/news signals
-      7. FILE         — file operations
-      8. PASSWORD     — password generation
-      9. SYSTEM       — system information
-      10. GENERAL     — fallback
+      7. FILE          — file operations
+      8. PASSWORD      — password generation
+      9. SYSTEM        — system information
+      10. GENERAL      — fallback
     """
 
     def classify(self, text: str) -> Intent:
@@ -221,51 +248,86 @@ class IntentClassifier:
 
         # ------------------------------------------------------------------
         # Gate 3 — SEARCH via explicit verb (before datetime)
-        # Fix 2: "Search for Bitcoin price today" must hit here, not datetime.
+        # "Search for Bitcoin price today" must hit here, not datetime.
         # ------------------------------------------------------------------
         if _SEARCH_VERB_PATTERN.search(stripped):
-            return Intent(type=SEARCH, confidence=0.92, reason="Explicit search verb matched.")
+            return Intent(
+                type=SEARCH,
+                confidence=0.92,
+                reason="Explicit search verb matched.",
+            )
 
         # ------------------------------------------------------------------
         # Gate 4 — DATETIME
         # Strong patterns first; weak "today" only when no search verb present.
         # ------------------------------------------------------------------
         if any(p.search(stripped) for p in _DATETIME_STRONG_PATTERNS):
-            return Intent(type=DATETIME, confidence=0.92, reason="Datetime pattern matched.")
+            return Intent(
+                type=DATETIME,
+                confidence=0.92,
+                reason="Datetime pattern matched.",
+            )
 
-        # Weak: bare "today" — safe here because search verb already handled above
         if _DATETIME_WEAK_TODAY.search(stripped):
-            return Intent(type=DATETIME, confidence=0.80, reason="Bare 'today' matched.")
+            return Intent(
+                type=DATETIME,
+                confidence=0.80,
+                reason="Bare 'today' matched.",
+            )
 
         # ------------------------------------------------------------------
         # Gate 5 — WEATHER
         # ------------------------------------------------------------------
         if any(p.search(stripped) for p in _WEATHER_PATTERNS):
-            return Intent(type=WEATHER, confidence=0.92, reason="Weather pattern matched.")
+            return Intent(
+                type=WEATHER,
+                confidence=0.92,
+                reason="Weather pattern matched.",
+            )
 
         # ------------------------------------------------------------------
         # Gate 6 — SEARCH via recency/news nouns
-        # Fix 1: "Latest AI news" — recency word + up to 40 chars + news noun
+        # "Latest AI news" — recency word + up to 40 chars + news noun.
         # ------------------------------------------------------------------
         if any(p.search(stripped) for p in _SEARCH_PATTERNS):
-            return Intent(type=SEARCH, confidence=0.88, reason="Search pattern matched.")
+            return Intent(
+                type=SEARCH,
+                confidence=0.88,
+                reason="Search pattern matched.",
+            )
 
         # ------------------------------------------------------------------
-        # Gates 7-9 — Domain tools
+        # Gates 7–9 — Domain tools
         # ------------------------------------------------------------------
         if any(p.search(stripped) for p in _FILE_PATTERNS):
-            return Intent(type=FILE, confidence=0.88, reason="File pattern matched.")
+            return Intent(
+                type=FILE,
+                confidence=0.88,
+                reason="File pattern matched.",
+            )
 
         if any(p.search(stripped) for p in _PASSWORD_PATTERNS):
-            return Intent(type=PASSWORD, confidence=0.92, reason="Password pattern matched.")
+            return Intent(
+                type=PASSWORD,
+                confidence=0.92,
+                reason="Password pattern matched.",
+            )
 
         if any(p.search(stripped) for p in _SYSTEM_PATTERNS):
-            return Intent(type=SYSTEM, confidence=0.88, reason="System info pattern matched.")
+            return Intent(
+                type=SYSTEM,
+                confidence=0.88,
+                reason="System info pattern matched.",
+            )
 
         # ------------------------------------------------------------------
         # Gate 10 — GENERAL fallback
         # ------------------------------------------------------------------
-        return Intent(type=GENERAL, confidence=0.60, reason="No specific pattern matched.")
+        return Intent(
+            type=GENERAL,
+            confidence=0.60,
+            reason="No specific pattern matched.",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -294,5 +356,7 @@ def classify_intent(text: str) -> Intent:
         Intent(type='SEARCH', confidence=0.88)
         >>> classify_intent("Search for Bitcoin price today")
         Intent(type='SEARCH', confidence=0.92)
+        >>> classify_intent("Plan a 3-day itinerary for Tokyo")
+        Intent(type='GENERAL', confidence=0.60)
     """
     return _default_classifier.classify(text)

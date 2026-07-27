@@ -161,3 +161,49 @@ class ExecutionContext:
             "steps_failed":    len(self.failed_steps()),
             "tool_results":    list(self.tool_results.keys()),
         }
+
+
+    # ------------------------------------------------------------------ #
+    # Sprint 3.18 additions                                               #
+    # ------------------------------------------------------------------ #
+
+    def clear(self) -> None:
+        """
+        Reset all context state.
+
+        Clears variables, tool_results, step_results, and metadata.
+        Called after a request lifecycle completes to prevent state
+        leaking into a subsequent request.
+
+        Sprint 3.18 - Added.
+        """
+        self.variables.clear()
+        self.tool_results.clear()
+        self.step_results.clear()
+        self.metadata.clear()
+
+    def to_dict(self) -> dict:
+        """
+        Export a snapshot of the full context state as a plain dict.
+
+        Returns a shallow copy of variables plus summary counts.
+        Safe to log, serialise, or pass to the Response Composer.
+
+        Returns:
+            {
+                "user_message":    str,
+                "variables":       dict,
+                "tool_results":    list of tool names,
+                "steps_completed": int,
+                "steps_failed":    int,
+            }
+
+        Sprint 3.18 - Added.
+        """
+        return {
+            "user_message":    self.user_message,
+            "variables":       dict(self.variables),
+            "tool_results":    list(self.tool_results.keys()),
+            "steps_completed": len(self.successful_steps()),
+            "steps_failed":    len(self.failed_steps()),
+        }

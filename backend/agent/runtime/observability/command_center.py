@@ -1,5 +1,12 @@
 ﻿"""
 Sprint 3.20.1 — Command Center
+Sprint 3.21   — Pipeline trace added.
+               GoalState now tracks:
+                 tool_input       : what was sent to the tool
+                 raw_tool_output  : what the tool returned verbatim
+                 validated_output : output after integrity check
+                 final_response   : what was sent to the LLM
+               Any mismatch between raw and validated is flagged visibly.
 Real-time execution visualization for Tarka Agent Runtime.
 Pure observer — never modifies execution.
 """
@@ -11,29 +18,59 @@ from backend.agent.runtime.event_bus import EventBus
 
 class GoalState:
     def __init__(self, index: int, name: str, total: int):
-        self.index:       int               = index
-        self.name:        str               = name
-        self.total:       int               = total
-        self.status:      GoalDisplayStatus = GoalDisplayStatus.PENDING
-        self.tool:        Optional[str]     = None
-        self.tool_input:  Optional[str]     = None
-        self.tool_output: Optional[str]     = None
-        self.duration:    Optional[float]   = None
-        self.retries:     int               = 0
-        self.error:       Optional[str]     = None
+        self.index:            int               = index
+        self.name:             str               = name
+        self.total:            int               = total
+        self.status:           GoalDisplayStatus = GoalDisplayStatus.PENDING
+        self.tool:             Optional[str]     = None
+        self.tool_input:       Optional[str]     = None
+        self.raw_tool_output:  Optional[str]     = None   # Sprint 3.21
+        self.validated_output: Optional[str]     = None   # Sprint 3.21
+        self.final_response:   Optional[str]     = None   # Sprint 3.21
+        self.output_mismatch:  bool              = False  # Sprint 3.21
+        self.tool_output:      Optional[str]     = None   # backward compat
+        self.duration:         Optional[float]   = None
+        self.retries:          int               = 0
+        self.error:            Optional[str]     = None
+
+    def set_pipeline_trace(
+        self,
+        raw_output:       str,
+        validated_output: str,
+        final_response:   str,
+    ) -> None:
+        """
+        Sprint 3.21 — Record the full pipeline trace for this goal.
+        Detects mismatches between raw tool output and validated output.
+        """
+        self.raw_tool_output  = raw_output
+        self.validated_output = validated_output
+        self.final_response   = final_response
+        self.tool_output      = raw_output  # backward compat
+
+        # Mismatch: validated differs from raw — should never happen
+        self.output_mismatch = (
+            raw_output is not None
+            and validated_output is not None
+            and raw_output.strip() != validated_output.strip()
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "index":       self.index,
-            "position":    f"{self.index + 1}/{self.total}",
-            "name":        self.name,
-            "status":      self.status.value,
-            "tool":        self.tool,
-            "tool_input":  self.tool_input,
-            "tool_output": self.tool_output,
-            "duration":    f"{self.duration:.3f}s" if self.duration else None,
-            "retries":     self.retries,
-            "error":       self.error,
+            "index":            self.index,
+            "position":         f"{self.index + 1}/{self.total}",
+            "name":             self.name,
+            "status":           self.status.value,
+            "tool":             self.tool,
+            "tool_input":       self.tool_input,
+            "raw_tool_output":  self.raw_tool_output,
+            "validated_output": self.validated_output,
+            "final_response":   self.final_response,
+            "output_mismatch":  self.output_mismatch,
+            "tool_output":      self.tool_output,
+            "duration":         f"{self.duration:.3f}s" if self.duration else None,
+            "retries":          self.retries,
+            "error":            self.error,
         }
 
 
@@ -43,6 +80,10 @@ class CommandCenter:
     Subscribes to EventBus.
     Visualizes execution in real time.
     Pure observer — never modifies execution.
+
+    Sprint 3.21: Full pipeline trace display added.
+      Tool Input -> Raw Tool Output -> Validated Output -> Final Response
+      Mismatches between raw and validated output are flagged visibly.
     """
 
     def __init__(self, event_bus: EventBus, verbose: bool = True):
@@ -57,6 +98,7 @@ class CommandCenter:
         self._plan_description: str                  = ""
         self._tools_used:       List[str]            = []
         self._timeline:         List[Dict]           = []
+        self._mismatches:       List[Dict]           = []  # Sprint 3.21
 
         self.event_bus.subscribe(self._handle)
 
@@ -65,10 +107,6 @@ class CommandCenter:
     # --------------------------------------------------
 
     def _get_or_create_goal(self, index: int, name: str, total: int) -> GoalState:
-        """
-        Return existing GoalState or create one.
-        Handles aborted/skipped goals that were never started.
-        """
         if index not in self._goals:
             self._goals[index] = GoalState(
                 index,
@@ -76,6 +114,12 @@ class CommandCenter:
                 total or self._total_goals
             )
         return self._goals[index]
+
+    def _truncate(self, text: str, max_len: int = 72) -> str:
+        if not text:
+            return ""
+        text = str(text)
+        return text if len(text) <= max_len else text[:max_len - 3] + "..."
 
     # --------------------------------------------------
     # Dispatcher
@@ -128,6 +172,12 @@ class CommandCenter:
         if self.verbose:
             print("-" * 62)
             print("  EXECUTION COMPLETE")
+            # Sprint 3.21 — show mismatch warning if any
+            if self._mismatches:
+                print()
+                print(f"  ⚠  WARNING: {len(self._mismatches)} output mismatch(es) detected.")
+                for m in self._mismatches:
+                    print(f"     Goal {m['goal_index']}: raw={m['raw']!r} validated={m['validated']!r}")
             print("-" * 62)
 
     # --------------------------------------------------
@@ -155,12 +205,35 @@ class CommandCenter:
         )
         goal.status   = GoalDisplayStatus.COMPLETED
         goal.duration = event.duration
-        if event.tool_output:
-            goal.tool_output = str(event.tool_output)
+
+        # Sprint 3.21 — record pipeline trace from event metadata
+        if event.metadata:
+            raw       = event.metadata.get("raw_tool_output", "")
+            validated = event.metadata.get("validated_output", "")
+            final     = event.metadata.get("final_response", "")
+            goal.set_pipeline_trace(raw, validated, final)
+
+            if goal.output_mismatch:
+                self._mismatches.append({
+                    "goal_index": idx,
+                    "raw":        raw,
+                    "validated":  validated,
+                })
+        elif event.tool_output:
+            goal.raw_tool_output  = str(event.tool_output)
+            goal.validated_output = str(event.tool_output)
+            goal.tool_output      = str(event.tool_output)
 
         if self.verbose:
             dur = f"{event.duration:.3f}s" if event.duration else "N/A"
             print(f"        Status  : COMPLETED  ({dur})")
+            # Sprint 3.21 — pipeline trace
+            if goal.raw_tool_output:
+                print(f"        Raw Out : {self._truncate(goal.raw_tool_output)}")
+            if goal.validated_output and goal.validated_output != goal.raw_tool_output:
+                print(f"        Valid.  : {self._truncate(goal.validated_output)}")
+            if goal.output_mismatch:
+                print(f"        ⚠ MISMATCH: raw != validated")
 
     def _on_goal_failed(self, event: RuntimeEvent):
         idx  = event.goal_index
@@ -177,11 +250,6 @@ class CommandCenter:
                 print(f"        Error   : {event.error}")
 
     def _on_goal_skipped(self, event: RuntimeEvent):
-        """
-        FIX: Create GoalState even if goal was never started.
-        A skipped goal may jump straight from non-existence to skipped
-        when an upstream failure triggers cascading skip.
-        """
         idx  = event.goal_index
         goal = self._get_or_create_goal(
             idx, event.goal_name, event.goal_total or self._total_goals
@@ -194,11 +262,6 @@ class CommandCenter:
             print(f"        Status  : SKIPPED")
 
     def _on_goal_aborted(self, event: RuntimeEvent):
-        """
-        FIX: Create GoalState even if goal was never started.
-        Abort can be triggered by upstream failure before the goal
-        ever received on_goal_started.
-        """
         idx  = event.goal_index
         goal = self._get_or_create_goal(
             idx, event.goal_name, event.goal_total or self._total_goals
@@ -231,20 +294,20 @@ class CommandCenter:
         if self.verbose:
             print(f"        Tool    : {event.tool_name}")
             if event.tool_input:
-                print(f"        Input   : {event.tool_input}")
+                print(f"        Input   : {self._truncate(str(event.tool_input))}")
 
     def _on_tool_end(self, event: RuntimeEvent):
         self._current_tool = None
         idx = event.goal_index
         if idx in self._goals and event.tool_output:
-            self._goals[idx].tool_output = str(event.tool_output)
+            raw = str(event.tool_output)
+            self._goals[idx].raw_tool_output  = raw
+            self._goals[idx].validated_output = raw
+            self._goals[idx].tool_output      = raw
 
         if self.verbose:
             if event.tool_output:
-                out = str(event.tool_output)
-                if len(out) > 72:
-                    out = out[:69] + "..."
-                print(f"        Output  : {out}")
+                print(f"        Output  : {self._truncate(str(event.tool_output))}")
             if event.duration:
                 print(f"        Time    : {event.duration:.3f}s")
 
@@ -277,6 +340,77 @@ class CommandCenter:
             print(f"        Retry   : EXHAUSTED  ({event.max_retries} attempts)")
 
     # --------------------------------------------------
+    # Sprint 3.21 — Pipeline trace API
+    # --------------------------------------------------
+
+    def record_pipeline_trace(
+        self,
+        goal_index:       int,
+        tool_input:       str,
+        raw_tool_output:  str,
+        validated_output: str,
+        final_response:   str,
+    ) -> None:
+        """
+        Sprint 3.21 — Externally record a full pipeline trace for a goal.
+
+        Called by PlanExecutor after each step to record exactly what
+        moved through the pipeline. Enables the Command Center to display:
+            Tool Input -> Raw Tool Output -> Validated Output -> Final Response
+
+        Any mismatch between raw_tool_output and validated_output is flagged.
+
+        Args:
+            goal_index:       0-based goal index.
+            tool_input:       Expression or parameter sent to the tool.
+            raw_tool_output:  Verbatim output from tool.execute().
+            validated_output: Output after integrity check (should equal raw).
+            final_response:   The string passed to the LLM prompt.
+        """
+        if goal_index not in self._goals:
+            return
+
+        goal = self._goals[goal_index]
+        goal.tool_input = tool_input
+        goal.set_pipeline_trace(raw_tool_output, validated_output, final_response)
+
+        if goal.output_mismatch:
+            self._mismatches.append({
+                "goal_index": goal_index,
+                "raw":        raw_tool_output,
+                "validated":  validated_output,
+            })
+            if self.verbose:
+                print(f"  ⚠  [Goal {goal_index}] MISMATCH DETECTED")
+                print(f"     Raw      : {raw_tool_output!r}")
+                print(f"     Validated: {validated_output!r}")
+
+    def get_pipeline_trace(self, goal_index: int) -> Dict[str, Any]:
+        """
+        Sprint 3.21 — Return the full pipeline trace for a goal.
+
+        Returns:
+            Dict with tool_input, raw_tool_output, validated_output,
+            final_response, output_mismatch fields.
+            Empty dict if goal not found.
+        """
+        if goal_index not in self._goals:
+            return {}
+
+        g = self._goals[goal_index]
+        return {
+            "tool_input":       g.tool_input,
+            "raw_tool_output":  g.raw_tool_output,
+            "validated_output": g.validated_output,
+            "final_response":   g.final_response,
+            "output_mismatch":  g.output_mismatch,
+        }
+
+    def get_all_mismatches(self) -> List[Dict[str, Any]]:
+        """Sprint 3.21 — Return all detected output mismatches."""
+        return list(self._mismatches)
+
+    # --------------------------------------------------
     # Public API
     # --------------------------------------------------
 
@@ -288,6 +422,7 @@ class CommandCenter:
             "current_tool": self._current_tool,
             "goals":        {i: g.to_dict() for i, g in self._goals.items()},
             "tools_used":   self._tools_used,
+            "mismatches":   self._mismatches,
         }
 
     def get_goal_timeline(self) -> List[Dict[str, Any]]:
@@ -308,6 +443,7 @@ class CommandCenter:
             "retries":     sum(g.retries for g in goals),
             "duration":    duration,
             "tools_used":  list(self._tools_used),
+            "mismatches":  len(self._mismatches),
         }
 
     def print_summary(self):
@@ -327,6 +463,7 @@ class CommandCenter:
         print(f"  │  Retries      : {s['retries']:<24}│")
         print(f"  │  Duration     : {s['duration']:<24}│")
         print(f"  │  Tools Used   : {tools:<24}│")
+        print(f"  │  Mismatches   : {s['mismatches']:<24}│")
         print("  └──────────────────────────────────────────┘")
         print()
 
@@ -349,11 +486,34 @@ class CommandCenter:
                 line += f"  [Tool: {g['tool']}]"
             if g.get("retries"):
                 line += f"  [Retries: {g['retries']}]"
+            if g.get("output_mismatch"):
+                line += f"  ⚠ MISMATCH"
             if g.get("error"):
                 line += f"  ⚠ {g['error']}"
             print(line)
         print("  " + "─" * 58)
         print()
+
+    def print_pipeline_trace(self):
+        """
+        Sprint 3.21 — Print the full pipeline trace for all goals.
+        Shows: Tool Input -> Raw Output -> Validated Output -> Final Response
+        """
+        print()
+        print("  PIPELINE TRACE  (Sprint 3.21)")
+        print("  " + "─" * 58)
+        for i in sorted(self._goals):
+            g = self._goals[i]
+            print(f"  Goal {i + 1}: {g.name}")
+            print(f"    Tool         : {g.tool or 'N/A'}")
+            print(f"    Input        : {g.tool_input or 'N/A'}")
+            print(f"    Raw Output   : {g.raw_tool_output or 'N/A'}")
+            print(f"    Validated    : {g.validated_output or 'N/A'}")
+            print(f"    Final Prompt : {self._truncate(g.final_response or 'N/A', 60)}")
+            if g.output_mismatch:
+                print(f"    ⚠  MISMATCH DETECTED — raw != validated")
+            print()
+        print("  " + "─" * 58)
 
     def reset(self):
         self._goals.clear()
@@ -365,3 +525,4 @@ class CommandCenter:
         self._plan_description = ""
         self._tools_used.clear()
         self._timeline.clear()
+        self._mismatches.clear()

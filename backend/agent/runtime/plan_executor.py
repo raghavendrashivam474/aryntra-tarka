@@ -161,7 +161,7 @@ class PlanExecutor:
                 logger.warning(
                     "[PlanExecutor] Stopping after step %d ToolError", step_number
                 )
-                break
+                continue  # Sprint 3.21: ToolError is non-fatal, continue to next step
 
             except Exception as exc:
                 elapsed_ms = int((time.monotonic() - t_start) * 1000)
@@ -193,3 +193,4 @@ class PlanExecutor:
             len(context.failed_steps()),
         )
         return context
+

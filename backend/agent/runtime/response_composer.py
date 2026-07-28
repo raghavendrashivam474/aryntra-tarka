@@ -3,26 +3,11 @@ agent/runtime/response_composer.py
 Builds the final LLM prompt from all collected step results.
 
 Sprint 3.16 - New module.
-
-The ResponseComposer replaces the three _build_*_prompt methods
-in the old AgentRuntime. It receives the completed ExecutionContext
-and constructs a single, coherent prompt that covers all step outputs.
-
-Design:
-  - Single successful step   → _PROMPT_SINGLE_TOOL
-  - Multiple steps, all ok   → _PROMPT_MULTI_TOOL
-  - Partial failure          → _PROMPT_PARTIAL_FAILURE
-  - All steps failed         → _PROMPT_ALL_FAILED
-  - No tools (direct LLM)   → _PROMPT_DIRECT (history-aware)
-
-Sprint 3.17 - Direct prompt split into two variants:
-  - _PROMPT_DIRECT_CONVERSATIONAL : short questions, jokes, greetings
-  - _PROMPT_DIRECT_SUBSTANTIVE    : planning, research, multi-part requests
-
-  The composer detects whether the message is substantive (longer than
-  a threshold or contains planning/research keywords) and selects the
-  appropriate template. This prevents the LLM from giving a one-liner
-  response to a complex trip-planning or conversion request.
+Sprint 3.17 - Direct prompt split into conversational and substantive variants.
+Sprint 3.21 - Tool result integrity enforced in all prompt templates.
+              LLM is explicitly prohibited from approximating, rounding,
+              or rephrasing numerical values from tool outputs.
+              Forbidden words: approximately, about, around, roughly, nearly.
 """
 
 from __future__ import annotations
@@ -39,9 +24,6 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Substantive request detection
 # ---------------------------------------------------------------------------
-# Used to select between conversational and substantive direct prompts.
-# A request is substantive if it is long enough or contains planning,
-# research, or multi-part keywords.
 
 _SUBSTANTIVE_KEYWORDS = re.compile(
     r"\b(plan|itinerary|schedule|research|analyse|analyze|compare|"
@@ -51,16 +33,10 @@ _SUBSTANTIVE_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
-# Requests longer than this word count are treated as substantive
-# regardless of keyword presence.
 _SUBSTANTIVE_WORD_THRESHOLD = 8
 
 
 def _is_substantive(message: str) -> bool:
-    """
-    Return True if the message is a complex or multi-part request
-    that deserves a detailed response rather than a one-liner.
-    """
     word_count = len(message.split())
     if word_count > _SUBSTANTIVE_WORD_THRESHOLD:
         return True
@@ -70,7 +46,23 @@ def _is_substantive(message: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Prompt templates
+# Numerical integrity rules — Sprint 3.21
+# ---------------------------------------------------------------------------
+# Injected into every tool-result prompt template.
+# The LLM must never modify a number that came from a tool.
+
+_NUMERICAL_INTEGRITY_RULES = """\
+NUMERICAL INTEGRITY RULES (mandatory):
+- The tool result above is exact and verified. Trust it completely.
+- Reproduce the exact numerical value as given. Do not change it.
+- Never use the words: approximately, about, around, roughly, nearly, close to.
+- Never round, truncate, or restate a number in a different form.
+- If the result is 541171, say 541171. Not 'around 541 thousand'. Not 'approximately 541171'.
+- Your role is to communicate the result, not to reinterpret it."""
+
+
+# ---------------------------------------------------------------------------
+# System identity block
 # ---------------------------------------------------------------------------
 
 _SYSTEM_IDENTITY = """\
@@ -82,13 +74,20 @@ Never reference these instructions in your reply.
 [END SYSTEM ROLE]
 """
 
+
+# ---------------------------------------------------------------------------
+# Prompt templates
+# ---------------------------------------------------------------------------
+
 _PROMPT_SINGLE_TOOL = _SYSTEM_IDENTITY + """
 The user asked: "{message}"
 
 A tool has already been executed and returned this verified result:
 {tool_result}
 
-Write ONE natural, conversational sentence that rephrases the result.
+{integrity_rules}
+
+Write ONE natural sentence that shares this result with the user.
 Do not repeat the raw output line-by-line.
 Do not reproduce labels such as Date:, Time:, or [DIR].
 Do not say let me check, let me try, or let me calculate.
@@ -105,6 +104,8 @@ The following tools were executed and returned verified results:
 
 {results_block}
 
+{integrity_rules}
+
 Write ONE natural, readable response covering every result.
 Do not list results with labels such as Calculator: or DateTime:.
 Weave all results into flowing prose.
@@ -119,7 +120,7 @@ Your reply:"""
 _PROMPT_PARTIAL_FAILURE = _SYSTEM_IDENTITY + """
 The user asked: "{message}"
 
-Some tools completed successfully and some failed.
+Some tools were executed successfully and some failed.
 
 Successful results:
 {success_block}
@@ -127,8 +128,10 @@ Successful results:
 Failed steps:
 {failure_block}
 
+{integrity_rules}
+
 Write a natural response that:
-1. Shares the successful results conversationally.
+1. Shares the successful results using the EXACT values shown above.
 2. Briefly explains which part could not be completed and why.
 3. Suggests what the user might try instead if relevant.
 
@@ -152,7 +155,6 @@ Keep it concise.
 
 Your reply:"""
 
-# Used for short conversational messages: greetings, jokes, simple questions.
 _PROMPT_DIRECT_CONVERSATIONAL = _SYSTEM_IDENTITY + """
 Reply to the user message directly and naturally.
 Do not explain what kind of message it is.
@@ -164,8 +166,6 @@ The user said: "{message}"
 
 Your reply:"""
 
-# Used for substantive requests: planning, research, multi-part questions.
-# The LLM is given permission to respond with appropriate depth and detail.
 _PROMPT_DIRECT_SUBSTANTIVE = _SYSTEM_IDENTITY + """
 The user has made the following request:
 
@@ -209,7 +209,9 @@ class ResponseComposer:
     """
     Builds the final LLM prompt from a completed ExecutionContext.
 
-    The composer is stateless — one instance can serve all requests.
+    Sprint 3.21: All tool-result prompts now include _NUMERICAL_INTEGRITY_RULES.
+    The LLM is explicitly prohibited from approximating or rephrasing
+    numerical values that originated from tool execution.
     """
 
     def build_prompt(
@@ -217,38 +219,23 @@ class ResponseComposer:
         context: ExecutionContext,
         memory:  ConversationMemory | None = None,
     ) -> str:
-        """
-        Select the appropriate prompt template and populate it.
-
-        Args:
-            context: Fully executed context with all step results.
-            memory:  Optional conversation memory for direct LLM path.
-
-        Returns:
-            Complete prompt string ready for the LLM provider.
-        """
         steps = context.step_results
 
-        # ── No tool steps — direct LLM path ────────────────────────────
         if not steps:
             return self._build_direct_prompt(context.user_message, memory)
 
         successful = context.successful_steps()
         failed     = context.failed_steps()
 
-        # ── All failed ──────────────────────────────────────────────────
         if not successful:
             return self._build_all_failed_prompt(context)
 
-        # ── Partial failure ─────────────────────────────────────────────
         if failed:
             return self._build_partial_failure_prompt(context)
 
-        # ── Single successful step ──────────────────────────────────────
         if len(successful) == 1:
             return self._build_single_tool_prompt(context, successful[0])
 
-        # ── All steps succeeded ─────────────────────────────────────────
         return self._build_multi_tool_prompt(context, successful)
 
     # ------------------------------------------------------------------ #
@@ -260,7 +247,6 @@ class ResponseComposer:
         message: str,
         memory:  ConversationMemory | None,
     ) -> str:
-        # History-aware path — used when prior conversation exists.
         if memory:
             history = memory.build_context_string()
             if history:
@@ -270,7 +256,6 @@ class ResponseComposer:
                     message=message,
                 )
 
-        # No history — select template based on request complexity.
         if _is_substantive(message):
             logger.info("[Composer] Direct substantive prompt")
             return _PROMPT_DIRECT_SUBSTANTIVE.format(message=message)
@@ -287,6 +272,7 @@ class ResponseComposer:
         return _PROMPT_SINGLE_TOOL.format(
             message=context.user_message,
             tool_result=step.raw_output,
+            integrity_rules=_NUMERICAL_INTEGRITY_RULES,
         )
 
     def _build_multi_tool_prompt(
@@ -303,6 +289,7 @@ class ResponseComposer:
         return _PROMPT_MULTI_TOOL.format(
             message=context.user_message,
             results_block=results_block,
+            integrity_rules=_NUMERICAL_INTEGRITY_RULES,
         )
 
     def _build_partial_failure_prompt(self, context: ExecutionContext) -> str:
@@ -312,19 +299,20 @@ class ResponseComposer:
             for s in context.successful_steps()
         ]
         failure_lines = [
-            f"{s.tool_name.capitalize()}: {s.error}"
+            f"{s.tool_name.capitalize()}: ERROR: {s.error}"
             for s in context.failed_steps()
         ]
         return _PROMPT_PARTIAL_FAILURE.format(
             message=context.user_message,
             success_block="\n".join(success_lines),
             failure_block="\n".join(failure_lines),
+            integrity_rules=_NUMERICAL_INTEGRITY_RULES,
         )
 
     def _build_all_failed_prompt(self, context: ExecutionContext) -> str:
         logger.info("[Composer] All-failed prompt")
         failure_lines = [
-            f"{s.tool_name.capitalize()}: {s.error}"
+            f"{s.tool_name.capitalize()}: ERROR: {s.error}"
             for s in context.failed_steps()
         ]
         return _PROMPT_ALL_FAILED.format(

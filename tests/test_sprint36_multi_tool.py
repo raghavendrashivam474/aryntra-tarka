@@ -1,3 +1,4 @@
+import uuid
 """
 tests/test_sprint36_multi_tool.py
 Sprint 3.6 — Multi-Tool Planning Regression Tests
@@ -128,6 +129,7 @@ def make_runtime(
         provider=provider,
         memory=ConversationMemory(max_messages=20),
     )
+    runtime._test_session_id = str(uuid.uuid4())
     return runtime, provider
 
 
@@ -245,7 +247,7 @@ def test_runtime_single_calculator() -> None:
 
     async def run():
         rt, provider = make_runtime()
-        resp = await rt.process("Calculate 25 * 8")
+        resp, _meta = await rt.process("Calculate 25 * 8", session_id=rt._test_session_id)
         return resp, provider.last_prompt
 
     resp, prompt = asyncio.run(run())
@@ -260,7 +262,7 @@ def test_runtime_single_datetime() -> None:
 
     async def run():
         rt, provider = make_runtime()
-        resp = await rt.process("Current time")
+        resp, _meta = await rt.process("Current time", session_id=rt._test_session_id)
         return resp, provider.last_prompt
 
     resp, prompt = asyncio.run(run())
@@ -274,7 +276,7 @@ def test_runtime_direct_conversation() -> None:
 
     async def run():
         rt, provider = make_runtime()
-        resp = await rt.process("Hello there!")
+        resp, _meta = await rt.process("Hello there!", session_id=rt._test_session_id)
         return resp, provider.last_prompt
 
     resp, prompt = asyncio.run(run())
@@ -293,7 +295,7 @@ def test_runtime_calculator_and_datetime() -> None:
 
     async def run():
         rt, provider = make_runtime()
-        resp = await rt.process("Calculate 25 * 8 and tell me today's date.")
+        resp, _meta = await rt.process("Calculate 25 * 8 and tell me today's date.", session_id=rt._test_session_id)
         return resp, provider.last_prompt
 
     resp, prompt = asyncio.run(run())
@@ -313,7 +315,7 @@ def test_runtime_datetime_and_calculator() -> None:
 
     async def run():
         rt, provider = make_runtime()
-        resp = await rt.process("Current time and calculate 50 * 12.")
+        resp, _meta = await rt.process("Current time and calculate 50 * 12.", session_id=rt._test_session_id)
         return resp, provider.last_prompt
 
     resp, prompt = asyncio.run(run())
@@ -329,7 +331,7 @@ def test_runtime_filesystem_and_datetime() -> None:
 
     async def run():
         rt, provider = make_runtime()
-        resp = await rt.process("List files in the folder and tell me today's date.")
+        resp, _meta = await rt.process("List files in the folder and tell me today's date.", session_id=rt._test_session_id)
         return resp, provider.last_prompt
 
     resp, prompt = asyncio.run(run())
@@ -345,7 +347,7 @@ def test_runtime_multi_tool_both_results_in_prompt() -> None:
 
     async def run():
         rt, provider = make_runtime()
-        await rt.process("Calculate 10 + 5 and tell me the date.")
+        await rt.process("Calculate 10 + 5 and tell me the date.", session_id=rt._test_session_id)
         return provider.last_prompt
 
     prompt = asyncio.run(run())
@@ -361,7 +363,7 @@ def test_runtime_multi_tool_memory_stores_one_exchange() -> None:
 
     async def run():
         rt, provider = make_runtime()
-        await rt.process("Calculate 25 * 8 and tell me today's date.")
+        await rt.process("Calculate 25 * 8 and tell me today's date.", session_id=rt._test_session_id)
         return rt.memory.message_count
 
     count = asyncio.run(run())
@@ -396,7 +398,7 @@ def test_runtime_partial_failure_continues() -> None:
             )
 
         rt.planner.plan = patched_plan
-        resp = await rt.process("Test partial failure.")
+        resp, _meta = await rt.process("Test partial failure.", session_id=rt._test_session_id)
         return resp, provider.last_prompt
 
     resp, prompt = asyncio.run(run())
@@ -428,7 +430,7 @@ def test_runtime_partial_failure_error_text_in_prompt() -> None:
             )
 
         rt.planner.plan = patched_plan
-        await rt.process("Test partial failure with calculator.")
+        await rt.process("Test partial failure with calculator.", session_id=rt._test_session_id)
         return provider.last_prompt
 
     prompt = asyncio.run(run())
@@ -485,8 +487,8 @@ def test_regression_sprint35_memory_after_multi_tool() -> None:
 
     async def run():
         rt, _ = make_runtime()
-        await rt.process("Calculate 25 * 8 and tell me today's date.")
-        await rt.process("Hello.")
+        await rt.process("Calculate 25 * 8 and tell me today's date.", session_id=rt._test_session_id)
+        await rt.process("Hello.", session_id=rt._test_session_id)
         return rt.memory.message_count
 
     count = asyncio.run(run())
@@ -499,8 +501,8 @@ def test_regression_sprint35_memory_isolated() -> None:
     async def run():
         rt_a, _ = make_runtime()
         rt_b, provider_b = make_runtime()
-        await rt_a.process("My name is Raghav.")
-        await rt_b.process("What is my name?")
+        await rt_a.process("My name is Raghav.", session_id=rt_a._test_session_id)
+        await rt_b.process("What is my name?", session_id=rt_b._test_session_id)
         return provider_b.last_prompt
 
     prompt = asyncio.run(run())
@@ -513,7 +515,7 @@ def test_regression_sprint35_single_tool_memory() -> None:
 
     async def run():
         rt, _ = make_runtime()
-        await rt.process("Calculate 10 + 5")
+        await rt.process("Calculate 10 + 5", session_id=rt._test_session_id)
         return rt.memory.message_count
 
     count = asyncio.run(run())
@@ -529,7 +531,7 @@ def test_acceptance_example_1() -> None:
 
     async def run():
         rt, provider = make_runtime()
-        resp = await rt.process("Calculate 25 * 8 and tell me today's date.")
+        resp, _meta = await rt.process("Calculate 25 * 8 and tell me today's date.", session_id=rt._test_session_id)
         return resp, provider.last_prompt
 
     resp, prompt = asyncio.run(run())
@@ -546,7 +548,7 @@ def test_acceptance_example_2() -> None:
 
     async def run():
         rt, provider = make_runtime()
-        resp = await rt.process("Current time and calculate 50 * 12.")
+        resp, _meta = await rt.process("Current time and calculate 50 * 12.", session_id=rt._test_session_id)
         return resp, provider.last_prompt
 
     resp, prompt = asyncio.run(run())
@@ -560,7 +562,7 @@ def test_acceptance_example_3() -> None:
 
     async def run():
         rt, provider = make_runtime()
-        resp = await rt.process("List files in the folder and tell me today's date.")
+        resp, _meta = await rt.process("List files in the folder and tell me today's date.", session_id=rt._test_session_id)
         return resp, provider.last_prompt
 
     resp, prompt = asyncio.run(run())
@@ -574,7 +576,7 @@ def test_acceptance_example_4_single_calculator() -> None:
 
     async def run():
         rt, provider = make_runtime()
-        resp = await rt.process("Calculate 15 * 18")
+        resp, _meta = await rt.process("Calculate 15 * 18", session_id=rt._test_session_id)
         return resp, provider.last_prompt
 
     resp, prompt = asyncio.run(run())
@@ -588,7 +590,7 @@ def test_acceptance_example_5_single_datetime() -> None:
 
     async def run():
         rt, provider = make_runtime()
-        resp = await rt.process("Current time")
+        resp, _meta = await rt.process("Current time", session_id=rt._test_session_id)
         return resp, provider.last_prompt
 
     resp, prompt = asyncio.run(run())
@@ -602,7 +604,7 @@ def test_acceptance_example_6_direct_conversation() -> None:
 
     async def run():
         rt, provider = make_runtime()
-        resp = await rt.process("Hello.")
+        resp, _meta = await rt.process("Hello.", session_id=rt._test_session_id)
         return resp, provider.last_prompt
 
     resp, prompt = asyncio.run(run())

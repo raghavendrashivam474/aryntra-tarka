@@ -1,9 +1,9 @@
 ﻿// ============================================================
-// Sprint 3.20.1 — Timeline Component
+// Sprint 3.20.1 - Timeline Component
 // ============================================================
 
 import React from "react";
-import { GoalState } from "../../types/runtime";
+import type { GoalState } from "../../types/runtime";
 
 const DOT_ICON: Record<string, string> = {
   pending:   "○",
@@ -55,16 +55,12 @@ export const Timeline: React.FC<TimelineProps> = ({ goals, onSelectGoal }) => {
                 </span>
               )}
               {goal.error && (
-                <span style={{ color: "var(--red)", marginLeft: 6 }}>
-                  {goal.error}
-                </span>
+                <span style={{ color: "var(--red)", marginLeft: 6 }}>{goal.error}</span>
               )}
             </div>
           </div>
           <div style={{ paddingTop: 4 }}>
-            <span className={`status-badge status-${goal.status}`}>
-              {goal.status}
-            </span>
+            <span className={`status-badge status-${goal.status}`}>{goal.status}</span>
           </div>
         </div>
       ))}

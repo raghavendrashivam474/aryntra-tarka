@@ -1,9 +1,9 @@
 ﻿// ============================================================
-// Sprint 3.20.1 — GoalCard Component
+// Sprint 3.20.1 - GoalCard Component
 // ============================================================
 
 import React from "react";
-import { GoalState } from "../../types/runtime";
+import type { GoalState } from "../../types/runtime";
 
 const STATUS_ICON: Record<string, string> = {
   pending:   "○",
@@ -40,17 +40,11 @@ export const GoalCard: React.FC<GoalCardProps> = ({ goal, isSelected, onClick })
       <div className="goal-card-meta">
         <span className={`status-badge status-${goal.status}`}>{goal.status}</span>
         {goal.tool && <span className="goal-card-tool">{goal.tool}</span>}
-        {goal.duration && (
-          <span className="goal-card-duration">{goal.duration}</span>
-        )}
-        {goal.retries > 0 && (
-          <span className="goal-card-retry">↻ {goal.retries}</span>
-        )}
+        {goal.duration && <span className="goal-card-duration">{goal.duration}</span>}
+        {goal.retries > 0 && <span className="goal-card-retry">↻ {goal.retries}</span>}
       </div>
 
-      {goal.error && (
-        <div className="goal-card-error">{goal.error}</div>
-      )}
+      {goal.error && <div className="goal-card-error">{goal.error}</div>}
     </div>
   );
 };

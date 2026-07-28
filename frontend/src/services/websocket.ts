@@ -1,12 +1,23 @@
 ﻿// ============================================================
-// Sprint 3.20.1 — WebSocket Service
-// Connects to backend event stream
+// Sprint 3.20.1 - WebSocket Service
+// Auto-reconnecting client for runtime event stream
 // ============================================================
 
-import { RuntimeEvent } from "../types/runtime";
+import type { RuntimeEvent } from "../types/runtime";
 
 type EventHandler = (event: RuntimeEvent) => void;
 type StatusHandler = (connected: boolean) => void;
+
+function buildWsUrl(): string {
+  const envUrl = (import.meta as any).env?.VITE_WS_URL;
+  if (envUrl) return envUrl;
+
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const host = window.location.hostname;
+  const port = 8000;
+  // NOTE: /api prefix because api_router is mounted at /api in backend/main.py
+  return `${proto}//${host}:${port}/api/ws/runtime`;
+}
 
 class RuntimeWebSocket {
   private ws: WebSocket | null = null;
@@ -14,23 +25,28 @@ class RuntimeWebSocket {
   private statusHandlers: StatusHandler[] = [];
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 2000;
-  private url: string;
   private shouldReconnect = true;
-
-  constructor(url: string) {
-    this.url = url;
-  }
+  private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
 
   connect(): void {
     if (this.ws?.readyState === WebSocket.OPEN) return;
 
+    const url = buildWsUrl();
+    console.log("[CommandCenter] Connecting to", url);
+
     try {
-      this.ws = new WebSocket(this.url);
+      this.ws = new WebSocket(url);
 
       this.ws.onopen = () => {
         console.log("[CommandCenter] WebSocket connected");
         this.statusHandlers.forEach((h) => h(true));
         this.reconnectDelay = 2000;
+
+        this.keepAliveTimer = setInterval(() => {
+          if (this.ws?.readyState === WebSocket.OPEN) {
+            this.ws.send("ping");
+          }
+        }, 20000);
       };
 
       this.ws.onmessage = (msg) => {
@@ -38,21 +54,22 @@ class RuntimeWebSocket {
           const event: RuntimeEvent = JSON.parse(msg.data);
           this.handlers.forEach((h) => h(event));
         } catch {
-          console.warn("[CommandCenter] Failed to parse event", msg.data);
+          // Ignore non-JSON messages
         }
       };
 
       this.ws.onclose = () => {
         console.log("[CommandCenter] WebSocket disconnected");
         this.statusHandlers.forEach((h) => h(false));
+        if (this.keepAliveTimer) clearInterval(this.keepAliveTimer);
         if (this.shouldReconnect) {
           this.reconnectTimer = setTimeout(() => this.connect(), this.reconnectDelay);
           this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
         }
       };
 
-      this.ws.onerror = (err) => {
-        console.warn("[CommandCenter] WebSocket error", err);
+      this.ws.onerror = () => {
+        console.warn("[CommandCenter] WebSocket error");
       };
     } catch (err) {
       console.warn("[CommandCenter] Could not create WebSocket", err);
@@ -62,6 +79,7 @@ class RuntimeWebSocket {
   disconnect(): void {
     this.shouldReconnect = false;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.keepAliveTimer) clearInterval(this.keepAliveTimer);
     this.ws?.close();
     this.ws = null;
   }
@@ -85,6 +103,5 @@ class RuntimeWebSocket {
   }
 }
 
-const WS_URL = process.env.REACT_APP_WS_URL || "ws://localhost:8000/ws/runtime";
-export const runtimeSocket = new RuntimeWebSocket(WS_URL);
+export const runtimeSocket = new RuntimeWebSocket();
 export default RuntimeWebSocket;

@@ -1,9 +1,9 @@
 ﻿// ============================================================
-// Sprint 3.20.1 — GoalDetailsDrawer Component
+// Sprint 3.20.1 - GoalDetailsDrawer Component
 // ============================================================
 
 import React from "react";
-import { GoalState } from "../../types/runtime";
+import type { GoalState } from "../../types/runtime";
 
 interface GoalDetailsDrawerProps {
   goal: GoalState | null;
@@ -20,15 +20,12 @@ const STATUS_LABELS: Record<string, string> = {
   aborted:   "Aborted",
 };
 
-export const GoalDetailsDrawer: React.FC<GoalDetailsDrawerProps> = ({
-  goal,
-  onClose,
-}) => {
+export const GoalDetailsDrawer: React.FC<GoalDetailsDrawerProps> = ({ goal, onClose }) => {
   if (!goal) return null;
 
   const fields: { label: string; value?: string; color?: string }[] = [
-    { label: "Goal Name",   value: goal.name },
-    { label: "Position",    value: goal.position },
+    { label: "Goal Name", value: goal.name },
+    { label: "Position",  value: goal.position },
     {
       label: "Status",
       value: STATUS_LABELS[goal.status] ?? goal.status,
@@ -38,10 +35,10 @@ export const GoalDetailsDrawer: React.FC<GoalDetailsDrawerProps> = ({
            : goal.status === "skipped"   ? "var(--gray)"
            : "var(--text-primary)",
     },
-    { label: "Tool",      value: goal.tool      ?? "—" },
-    { label: "Input",     value: goal.tool_input ?? "—" },
-    { label: "Output",    value: goal.tool_output ?? "—" },
-    { label: "Duration",  value: goal.duration   ?? "—" },
+    { label: "Tool",     value: goal.tool         ?? "—" },
+    { label: "Input",    value: goal.tool_input   ?? "—" },
+    { label: "Output",   value: goal.tool_output  ?? "—" },
+    { label: "Duration", value: goal.duration     ?? "—" },
     {
       label: "Retries",
       value: String(goal.retries),
@@ -62,25 +59,18 @@ export const GoalDetailsDrawer: React.FC<GoalDetailsDrawerProps> = ({
       <div className="drawer">
         <div className="drawer-header">
           <span className="drawer-title">Goal Details</span>
-          <button className="drawer-close" onClick={onClose}>
-            Close ✕
-          </button>
+          <button className="drawer-close" onClick={onClose}>Close ✕</button>
         </div>
 
-        {/* Status badge */}
         <div style={{ marginBottom: 20 }}>
-          <span className={`status-badge status-${goal.status}`}>
-            {goal.status}
-          </span>
+          <span className={`status-badge status-${goal.status}`}>{goal.status}</span>
         </div>
 
         {fields.map((f) => (
           f.value ? (
             <div className="drawer-section" key={f.label}>
               <div className="drawer-label">{f.label}</div>
-              <div className="drawer-value" style={{ color: f.color }}>
-                {f.value}
-              </div>
+              <div className="drawer-value" style={{ color: f.color }}>{f.value}</div>
             </div>
           ) : null
         ))}

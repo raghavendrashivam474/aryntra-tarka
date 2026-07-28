@@ -1,12 +1,11 @@
 ﻿// ============================================================
-// Sprint 3.20.1 — useCommandCenter Hook
+// Sprint 3.20.1 - useCommandCenter Hook
 // Derives full dashboard state from a stream of RuntimeEvents
 // ============================================================
 
 import { useReducer, useEffect, useRef } from "react";
-import { RuntimeEvent, DashboardState, GoalState, EventType } from "../types/runtime";
+import type { RuntimeEvent, DashboardState, GoalState, EventType } from "../types/runtime";
 
-// ── Initial state ──────────────────────────────────────────
 const initial: DashboardState = {
   plan: "",
   status: "idle",
@@ -20,7 +19,6 @@ const initial: DashboardState = {
   elapsed: 0,
 };
 
-// ── Reducer ────────────────────────────────────────────────
 function reduce(state: DashboardState, event: RuntimeEvent): DashboardState {
   const goals = { ...state.goals };
   const tools = [...state.tools_used];
@@ -66,11 +64,7 @@ function reduce(state: DashboardState, event: RuntimeEvent): DashboardState {
         duration: event.duration ? `${(event.duration * 1000).toFixed(0)}ms` : undefined,
         tool_output: event.tool_output?.toString(),
       };
-      return {
-        ...state,
-        goals,
-        events: [...state.events, event],
-      };
+      return { ...state, goals, events: [...state.events, event] };
     }
 
     case "goal_failed": {
@@ -81,11 +75,7 @@ function reduce(state: DashboardState, event: RuntimeEvent): DashboardState {
         error: event.error,
         duration: event.duration ? `${(event.duration * 1000).toFixed(0)}ms` : undefined,
       };
-      return {
-        ...state,
-        goals,
-        events: [...state.events, event],
-      };
+      return { ...state, goals, events: [...state.events, event] };
     }
 
     case "goal_skipped": {
@@ -103,12 +93,7 @@ function reduce(state: DashboardState, event: RuntimeEvent): DashboardState {
         ...ensureGoal(idx, event.goal_name!, state.total_goals),
         status: "aborted",
       };
-      return {
-        ...state,
-        status: "failed",
-        goals,
-        events: [...state.events, event],
-      };
+      return { ...state, status: "failed", goals, events: [...state.events, event] };
     }
 
     case "tool_execution_start": {
@@ -195,7 +180,6 @@ function reduce(state: DashboardState, event: RuntimeEvent): DashboardState {
   }
 }
 
-// ── Hook ───────────────────────────────────────────────────
 export function useCommandCenter(events: RuntimeEvent[]) {
   const [state, dispatch] = useReducer(
     (s: DashboardState, e: RuntimeEvent) => reduce(s, e),
@@ -203,14 +187,12 @@ export function useCommandCenter(events: RuntimeEvent[]) {
   );
   const processedRef = useRef(0);
 
-  // Elapsed timer
   useEffect(() => {
     if (state.status !== "running") return;
     const t = setInterval(() => {}, 1000);
     return () => clearInterval(t);
   }, [state.status]);
 
-  // Process new events only
   useEffect(() => {
     const newEvents = events.slice(processedRef.current);
     newEvents.forEach((e) => dispatch(e));

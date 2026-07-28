@@ -1,10 +1,9 @@
 ﻿// ============================================================
-// Sprint 3.20.1 — EventLog Component
-// Chronological stream of all runtime events
+// Sprint 3.20.1 - EventLog Component
 // ============================================================
 
 import React, { useEffect, useRef } from "react";
-import { RuntimeEvent } from "../../types/runtime";
+import type { RuntimeEvent } from "../../types/runtime";
 
 const TYPE_COLOR: Record<string, string> = {
   plan_started:         "var(--blue)",

@@ -1,76 +1,62 @@
-// frontend/src/components/TopBar.tsx
-import React from 'react'
-import { Menu, Settings, Cpu } from 'lucide-react'
-import { Link } from 'react-router-dom'
-import { APP_VERSION } from '../constants/version'
+﻿// frontend/src/components/TopBar.tsx
+// Sprint 3.20.1 - Added Command Center link
+import React from "react";
+import { Link } from "react-router-dom";
+import { Menu, Zap } from "lucide-react";
 
 interface TopBarProps {
-  onToggleSidebar: () => void
-  isMobile:        boolean
+  onToggleSidebar: () => void;
+  isMobile: boolean;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({ onToggleSidebar, isMobile }) => {
   return (
-    <header className="
-      flex items-center justify-between
-      h-14 px-4
-      bg-surface-900/80 backdrop-blur-md
-      border-b border-white/5
-      shrink-0 z-30
-    ">
-      {/* Left — hamburger on mobile */}
+    <header className="flex items-center justify-between h-14 px-4 bg-surface-900 border-b border-white/5 shrink-0">
+      {/* Left */}
       <div className="flex items-center gap-3">
         {isMobile && (
           <button
             onClick={onToggleSidebar}
-            aria-label="Open sidebar"
-            className="
-              p-2 rounded-lg
-              text-white/60 hover:text-white
-              hover:bg-white/8
-              transition-colors
-            "
+            className="p-2 rounded-md hover:bg-white/5 text-white/70"
+            aria-label="Toggle sidebar"
           >
             <Menu size={20} />
           </button>
         )}
-
-        {/* Brand */}
-        <Link to="/" className="flex items-center gap-2 select-none">
-          <div className="
-            w-7 h-7 rounded-lg
-            bg-brand-500 flex items-center justify-center
-          ">
-            <Cpu size={14} className="text-white" />
+        <Link to="/" className="flex items-center gap-2 text-white/90">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
+            <span className="text-sm font-bold">A</span>
           </div>
-          <span className="font-semibold text-sm tracking-wide text-white">
-            Aryntra Tarka
-          </span>
-          <span className="
-            hidden sm:inline-block
-            text-xs text-white/30 font-mono
-            ml-1
-          ">
-            v{APP_VERSION}
-          </span>
+          <div>
+            <div className="text-sm font-semibold leading-tight">Aryntra Tarka</div>
+            <div className="text-[10px] text-white/40 leading-tight">v1.0.0</div>
+          </div>
         </Link>
       </div>
 
-      {/* Right — Settings */}
+      {/* Right */}
       <div className="flex items-center gap-2">
+        {/* Command Center Button */}
         <Link
-          to="/settings"
-          aria-label="Settings"
+          to="/command-center"
           className="
-            p-2 rounded-lg
-            text-white/60 hover:text-white
-            hover:bg-white/8
-            transition-colors
+            flex items-center gap-2
+            px-3 py-1.5 rounded-md
+            bg-gradient-to-r from-indigo-600/20 to-purple-600/20
+            hover:from-indigo-600/30 hover:to-purple-600/30
+            border border-indigo-500/30 hover:border-indigo-400
+            text-indigo-200 hover:text-white
+            text-xs font-medium
+            transition-all
           "
+          title="Open Command Center"
         >
-          <Settings size={18} />
+          <Zap size={14} />
+          <span className="hidden sm:inline">Command Center</span>
         </Link>
       </div>
     </header>
-  )
-}
+  );
+};
+
+export default TopBar;

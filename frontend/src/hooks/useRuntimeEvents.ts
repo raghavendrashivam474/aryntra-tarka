@@ -1,10 +1,9 @@
 ﻿// ============================================================
-// Sprint 3.20.1 — useRuntimeEvents Hook
-// Subscribes to WebSocket and collects runtime events
+// Sprint 3.20.1 - useRuntimeEvents Hook
 // ============================================================
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { RuntimeEvent } from "../types/runtime";
+import type { RuntimeEvent } from "../types/runtime";
 import { runtimeSocket } from "../services/websocket";
 
 interface UseRuntimeEventsReturn {
@@ -35,8 +34,6 @@ export function useRuntimeEvents(maxEvents = 500): UseRuntimeEventsReturn {
     });
 
     const unsubStatus = runtimeSocket.onStatus(setConnected);
-
-    // Flush buffer every 100ms for smooth updates
     const flushInterval = setInterval(flush, 100);
 
     return () => {

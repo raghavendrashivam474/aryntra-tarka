@@ -1,24 +1,57 @@
-﻿"""
-agent/runtime/execution_context.py
-Shared execution context for multi-step orchestration.
+"""
+execution_context.py
+====================
+Sprint 3.18/3.19 � Execution Context
+Post-Sprint 3.19 Integration Fix � restored full API surface
 
-Sprint 3.16 - New module.
+The ExecutionContext is a per-request container that holds:
+  - Goal execution results (tool outputs, intermediate values)
+  - Recovery metadata (retry counts, failure reasons, statuses)
+  - Step-level results for ResponseComposer and metadata reporting
+  - Tool result dicts for VariableResolver
+  - Named variables for placeholder substitution
+  - Arbitrary key/value pairs for cross-goal communication
 
-The ExecutionContext is created once per request and passed through
-every step of the PlanExecutor. Each step deposits its result here.
-Later steps read earlier results via the variable registry.
+This object is passed through the entire execution pipeline and
+serves as the single source of truth for the current run.
 
-Design:
-  - tool_results   : raw structured dict per tool name
-  - step_results   : ordered list of StepResult objects
-  - variables      : flat key/value store for placeholder substitution
-  - metadata       : free-form dict for debugging and tracing
+API surface
+-----------
+  Constructor
+    ExecutionContext(user_message="")
+
+  Step tracking  (PlanExecutor, ResponseComposer, runtime.py)
+    add_step_result(result: StepResult) -> None
+    successful_steps() -> list[StepResult]
+    failed_steps()     -> list[StepResult]
+    step_results       -> list[StepResult]   (attribute)
+
+  Tool results   (ResultRegistry, VariableResolver)
+    tool_results       -> dict[str, Any]     (attribute)
+
+  Named variables  (VariableResolver, ResultRegistry)
+    set_variable(key, value) -> None
+    get_variable(key)        -> Any | None
+    has_variable(key)        -> bool
+
+  Metadata  (RecoveryEngine � DO NOT CHANGE THESE)
+    set_metadata(key, value) -> None
+    get_metadata(key)        -> Any | None
+    all_metadata()           -> dict[str, Any]
+
+  Goal-level results  (store/retrieve by goal_id)
+    store_result(goal_id, result) -> None
+    get_result(goal_id)           -> Any | None
+    all_results()                 -> dict[str, Any]
+
+  Convenience
+    clear() -> None
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -28,36 +61,29 @@ from typing import Any
 @dataclass
 class StepResult:
     """
-    The outcome of executing one plan step.
+    Immutable record of a single tool-execution step.
 
-    Attributes:
-        step_number : 1-based position in the plan.
-        tool_name   : Name of the tool that was executed.
-        parameters  : Parameters passed to the tool (after substitution).
-        raw_output  : Plain string output from tool.execute().
-        structured  : Structured dict output from tool.execute_structured().
-        success     : True if the step completed without error.
-        error       : Error message if success is False, else None.
+    Produced by PlanExecutor after every step attempt (success or failure).
+    Consumed by ResponseComposer to build the final LLM prompt and by
+    runtime.py to populate ExecutionMetadata.
+
+    Attributes
+    ----------
+    step_number : 1-based position in the plan.
+    tool_name   : Name of the tool that was invoked.
+    parameters  : Resolved parameters that were passed to the tool.
+    raw_output  : Human-readable string output (used in prompts).
+    structured  : Full structured dict returned by execute_structured().
+    success     : True if the tool completed without exception.
+    error       : Error message string if success is False, else None.
     """
-
     step_number: int
     tool_name:   str
-    parameters:  dict[str, Any]
-    raw_output:  str             = ""
-    structured:  dict[str, Any]  = field(default_factory=dict)
-    success:     bool            = True
-    error:       str | None      = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "step_number": self.step_number,
-            "tool_name":   self.tool_name,
-            "parameters":  self.parameters,
-            "raw_output":  self.raw_output,
-            "structured":  self.structured,
-            "success":     self.success,
-            "error":       self.error,
-        }
+    parameters:  Dict[str, Any]
+    raw_output:  str
+    structured:  Dict[str, Any]
+    success:     bool
+    error:       Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -66,144 +92,197 @@ class StepResult:
 
 class ExecutionContext:
     """
-    Mutable shared state for a single request's orchestration run.
+    Per-execution container for results, metadata, and variables.
 
-    Passed sequentially through every PlanStep. Each step reads
-    variables from earlier steps and writes its own results back.
+    One instance is created per user request and passed through the
+    entire execution pipeline:
 
-    Usage:
-        ctx = ExecutionContext(user_message="What time is it?")
-        ctx.set_variable("CURRENT_HOUR", 22)
-        hour = ctx.get_variable("CURRENT_HOUR")   # 22
-        ctx.add_step_result(step_result)
+        PlanExecutor -> RecoveryEngine -> ResponseComposer
+
+    Thread-safety: NOT thread-safe. Each execution run must have its
+    own instance.
     """
 
     def __init__(self, user_message: str = "") -> None:
-        self.user_message:  str                    = user_message
-        self.variables:     dict[str, Any]         = {}
-        self.tool_results:  dict[str, dict]        = {}
-        self.step_results:  list[StepResult]       = []
-        self.metadata:      dict[str, Any]         = {}
+        # The original user message � used by ResponseComposer for prompts.
+        self.user_message: str = user_message
 
-    # ------------------------------------------------------------------ #
-    # Variable store                                                      #
-    # ------------------------------------------------------------------ #
+        # Ordered list of step results � appended by PlanExecutor.
+        self.step_results: List[StepResult] = []
 
-    def set_variable(self, key: str, value: Any) -> None:
-        """Store a named variable for use in later steps."""
-        self.variables[key] = value
+        # Full structured tool outputs keyed by tool name.
+        # Written by ResultRegistry, read by VariableResolver.
+        self.tool_results: Dict[str, Any] = {}
 
-    def get_variable(self, key: str, default: Any = None) -> Any:
-        """Retrieve a named variable. Returns default if not set."""
-        return self.variables.get(key, default)
+        # Named variable store for placeholder substitution.
+        # Written by ResultRegistry.set_variable(),
+        # read by VariableResolver.get_variable() / has_variable().
+        self._variables: Dict[str, Any] = {}
 
-    def has_variable(self, key: str) -> bool:
-        """Return True if the variable exists in context."""
-        return key in self.variables
+        # Recovery and execution metadata � keyed by "{goal_id}:{field}".
+        # Written and read exclusively by RecoveryEngine.
+        self._metadata: Dict[str, Any] = {}
 
-    def set_variables(self, mapping: dict[str, Any]) -> None:
-        """Bulk-set multiple variables from a dict."""
-        self.variables.update(mapping)
+        # Goal-level results keyed by goal_id string.
+        # Written by store_result(), read by get_result().
+        self._results: Dict[str, Any] = {}
 
-    # ------------------------------------------------------------------ #
-    # Step results                                                        #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # Step tracking API
+    # (PlanExecutor, ResponseComposer, runtime.py)
+    # ------------------------------------------------------------------
 
     def add_step_result(self, result: StepResult) -> None:
         """
-        Record a completed step result.
+        Append a StepResult to the ordered step list.
 
-        Also indexes the structured output under the tool name and
-        updates LAST_RESULT to point to the latest raw output.
+        Called by PlanExecutor after every step attempt, whether the
+        step succeeded or failed.
+
+        Args:
+            result: Completed StepResult for this step.
         """
         self.step_results.append(result)
-        if result.structured:
-            self.tool_results[result.tool_name] = result.structured
-        self.variables["LAST_RESULT"] = result.raw_output
-        self.variables["LAST_RESULT_STRUCTURED"] = result.structured
 
-    def last_step(self) -> StepResult | None:
-        """Return the most recently completed step, or None."""
-        return self.step_results[-1] if self.step_results else None
-
-    def successful_steps(self) -> list[StepResult]:
-        """Return only the steps that completed without error."""
-        return [s for s in self.step_results if s.success]
-
-    def failed_steps(self) -> list[StepResult]:
-        """Return only the steps that failed."""
-        return [s for s in self.step_results if not s.success]
-
-    def has_failures(self) -> bool:
-        """True if any step failed."""
-        return any(not s.success for s in self.step_results)
-
-    # ------------------------------------------------------------------ #
-    # Metadata                                                            #
-    # ------------------------------------------------------------------ #
-
-    def set_meta(self, key: str, value: Any) -> None:
-        self.metadata[key] = value
-
-    def get_meta(self, key: str, default: Any = None) -> Any:
-        return self.metadata.get(key, default)
-
-    # ------------------------------------------------------------------ #
-    # Debug                                                               #
-    # ------------------------------------------------------------------ #
-
-    def summary(self) -> dict[str, Any]:
-        """Return a debug-friendly summary of the context state."""
-        return {
-            "user_message":    self.user_message,
-            "variables":       self.variables,
-            "steps_completed": len(self.successful_steps()),
-            "steps_failed":    len(self.failed_steps()),
-            "tool_results":    list(self.tool_results.keys()),
-        }
-
-
-    # ------------------------------------------------------------------ #
-    # Sprint 3.18 additions                                               #
-    # ------------------------------------------------------------------ #
-
-    def clear(self) -> None:
+    def successful_steps(self) -> List[StepResult]:
         """
-        Reset all context state.
-
-        Clears variables, tool_results, step_results, and metadata.
-        Called after a request lifecycle completes to prevent state
-        leaking into a subsequent request.
-
-        Sprint 3.18 - Added.
-        """
-        self.variables.clear()
-        self.tool_results.clear()
-        self.step_results.clear()
-        self.metadata.clear()
-
-    def to_dict(self) -> dict:
-        """
-        Export a snapshot of the full context state as a plain dict.
-
-        Returns a shallow copy of variables plus summary counts.
-        Safe to log, serialise, or pass to the Response Composer.
+        Return all steps that completed without error, in execution order.
 
         Returns:
-            {
-                "user_message":    str,
-                "variables":       dict,
-                "tool_results":    list of tool names,
-                "steps_completed": int,
-                "steps_failed":    int,
-            }
-
-        Sprint 3.18 - Added.
+            List of StepResult where success is True.
         """
-        return {
-            "user_message":    self.user_message,
-            "variables":       dict(self.variables),
-            "tool_results":    list(self.tool_results.keys()),
-            "steps_completed": len(self.successful_steps()),
-            "steps_failed":    len(self.failed_steps()),
-        }
+        return [s for s in self.step_results if s.success]
+
+    def failed_steps(self) -> List[StepResult]:
+        """
+        Return all steps that raised an error, in execution order.
+
+        Returns:
+            List of StepResult where success is False.
+        """
+        return [s for s in self.step_results if not s.success]
+
+    # ------------------------------------------------------------------
+    # Named variable API
+    # (ResultRegistry writes, VariableResolver reads)
+    # ------------------------------------------------------------------
+
+    def set_variable(self, key: str, value: Any) -> None:
+        """
+        Store a named variable for use in placeholder substitution.
+
+        Args:
+            key:   Variable name (e.g. "CURRENT_HOUR", "LAST_RESULT").
+            value: The value to store.
+        """
+        self._variables[key] = value
+
+    def get_variable(self, key: str) -> Optional[Any]:
+        """
+        Retrieve a named variable by key.
+
+        Args:
+            key: Variable name previously stored with set_variable().
+
+        Returns:
+            The stored value, or None if not found.
+        """
+        return self._variables.get(key)
+
+    def has_variable(self, key: str) -> bool:
+        """
+        Check whether a named variable exists.
+
+        Args:
+            key: Variable name to check.
+
+        Returns:
+            True if the variable has been set, False otherwise.
+        """
+        return key in self._variables
+
+    # ------------------------------------------------------------------
+    # Metadata API
+    # (RecoveryEngine � DO NOT CHANGE METHOD SIGNATURES)
+    # ------------------------------------------------------------------
+
+    def set_metadata(self, key: str, value: Any) -> None:
+        """
+        Store a metadata value under the given key.
+
+        Args:
+            key:   Unique identifier (typically "{goal_id}:{field}").
+            value: Any serializable value.
+        """
+        self._metadata[key] = value
+
+    def get_metadata(self, key: str) -> Optional[Any]:
+        """
+        Retrieve a previously stored metadata value.
+
+        Args:
+            key: The key used in set_metadata().
+
+        Returns:
+            The stored value, or None if the key does not exist.
+        """
+        return self._metadata.get(key)
+
+    def all_metadata(self) -> Dict[str, Any]:
+        """Return a shallow copy of all stored metadata."""
+        return dict(self._metadata)
+
+    # ------------------------------------------------------------------
+    # Goal-level results API
+    # (store/retrieve full goal results by goal_id)
+    # ------------------------------------------------------------------
+
+    def store_result(self, goal_id: str, result: Any) -> None:
+        """
+        Store the execution result for a completed goal.
+
+        Args:
+            goal_id: The unique identifier of the goal.
+            result:  The output produced by executing the goal.
+        """
+        self._results[goal_id] = result
+
+    def get_result(self, goal_id: str) -> Optional[Any]:
+        """
+        Retrieve the result of a previously executed goal.
+
+        Args:
+            goal_id: The unique identifier of the goal.
+
+        Returns:
+            The stored result, or None if not found.
+        """
+        return self._results.get(goal_id)
+
+    def all_results(self) -> Dict[str, Any]:
+        """Return a shallow copy of all stored goal results."""
+        return dict(self._results)
+
+    # ------------------------------------------------------------------
+    # Convenience
+    # ------------------------------------------------------------------
+
+    def clear(self) -> None:
+        """Reset all state. Useful for testing."""
+        self.step_results.clear()
+        self.tool_results.clear()
+        self._variables.clear()
+        self._metadata.clear()
+        self._results.clear()
+        self.user_message = ""
+
+    def __repr__(self) -> str:
+        return (
+            f"ExecutionContext("
+            f"user_message={self.user_message!r}, "
+            f"steps={len(self.step_results)}, "
+            f"successful={len(self.successful_steps())}, "
+            f"failed={len(self.failed_steps())}, "
+            f"metadata_keys={list(self._metadata.keys())}, "
+            f"result_keys={list(self._results.keys())})"
+        )

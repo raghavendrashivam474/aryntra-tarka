@@ -1,4 +1,8 @@
 // frontend/src/pages/Settings.tsx
+// Sprint 3.21.1 — Theme buttons wired to useTheme hook.
+//                 Theme selection now persists and applies immediately.
+//                 Removed local useState('dark') that did nothing.
+
 import React, { useState } from 'react'
 import {
   Settings as SettingsIcon,
@@ -11,20 +15,22 @@ import {
   AlertTriangle,
 } from 'lucide-react'
 import { APP_VERSION, BUILD_DATE } from '../constants/version'
-import { AboutDialog } from '../components/AboutDialog'
+import { AboutDialog }    from '../components/AboutDialog'
 import { useConversations } from '../hooks/useConversations'
-
-type Theme = 'dark' | 'light' | 'system'
+import { useTheme }       from '../hooks/useTheme'
+import type { Theme }     from '../hooks/useTheme'
 
 const THEMES: { value: Theme; label: string; icon: React.ReactNode }[] = [
-  { value: 'dark',   label: 'Dark',   icon: <Moon   size={16} /> },
-  { value: 'light',  label: 'Light',  icon: <Sun    size={16} /> },
+  { value: 'dark',   label: 'Dark',   icon: <Moon    size={16} /> },
+  { value: 'light',  label: 'Light',  icon: <Sun     size={16} /> },
   { value: 'system', label: 'System', icon: <Monitor size={16} /> },
 ]
 
 export const SettingsPage: React.FC = () => {
-  const [theme, setTheme]           = useState<Theme>('dark')
-  const [showAbout, setShowAbout]   = useState(false)
+  // Sprint 3.21.1 — reads and writes shared theme state
+  // Previously: useState('dark') — local only, did nothing to the UI
+  const { theme, setTheme }         = useTheme()
+  const [showAbout,    setShowAbout] = useState(false)
   const [confirmClear, setConfirm]  = useState(false)
   const { clearAllConversations }   = useConversations()
 
@@ -61,7 +67,7 @@ export const SettingsPage: React.FC = () => {
           </div>
         </div>
 
-        {/* ── Section: Appearance ── */}
+        {/* ── Appearance ── */}
         <Section title="Appearance">
           <div className="p-4">
             <p className="text-sm text-white/60 mb-3">Theme</p>
@@ -85,10 +91,13 @@ export const SettingsPage: React.FC = () => {
                 </button>
               ))}
             </div>
+            <p className="text-xs text-white/30 mt-3">
+              Theme is saved automatically and applied on next visit.
+            </p>
           </div>
         </Section>
 
-        {/* ── Section: Data ── */}
+        {/* ── Data ── */}
         <Section title="Data">
           <SettingsRow
             icon={<Trash2 size={16} className="text-red-400" />}
@@ -117,7 +126,7 @@ export const SettingsPage: React.FC = () => {
           </SettingsRow>
         </Section>
 
-        {/* ── Section: About ── */}
+        {/* ── About ── */}
         <Section title="About">
           <SettingsRow
             icon={<Info size={16} className="text-brand-400" />}
@@ -140,7 +149,6 @@ export const SettingsPage: React.FC = () => {
 
       </div>
 
-      {/* About Dialog */}
       {showAbout && <AboutDialog onClose={() => setShowAbout(false)} />}
     </div>
   )
@@ -175,9 +183,7 @@ interface SettingsRowProps {
   children?:   React.ReactNode
 }
 
-const SettingsRow: React.FC<SettingsRowProps> = ({
-  icon, label, description, children,
-}) => (
+const SettingsRow: React.FC<SettingsRowProps> = ({ icon, label, description, children }) => (
   <div className="flex items-center justify-between gap-4 p-4">
     <div className="flex items-start gap-3 min-w-0">
       <div className="mt-0.5 shrink-0">{icon}</div>

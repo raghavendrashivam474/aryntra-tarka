@@ -1,7 +1,7 @@
 ﻿// components/ChatWindow.tsx
-// Sprint 3.12 — AgentTimeline wired in. TypingIndicator replaced by
-// AgentTimeline when execution stages are available. Stages cleared
-// after streaming completes and are stored per in-flight message only.
+// Sprint 3.12  — AgentTimeline wired in.
+// Sprint 3.21.1 — Loading skeleton replaces EmptyState during history fetch.
+//                 Prevents blank screen flash on conversation restore.
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import MessageBubble from "./MessageBubble";
@@ -12,14 +12,14 @@ import { sendMessageStreaming, sendMessage } from "../services/api";
 import type { ExecutionMetadata, ExecutionStageEvent } from "../types";
 
 interface Message {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
+  id:        string;
+  role:      "user" | "assistant";
+  content:   string;
   metadata?: ExecutionMetadata;
 }
 
 const SESSION_STORAGE_KEY = "tarka_session_id";
-const API_BASE = "http://localhost:8000/api";
+const API_BASE            = "http://localhost:8000/api";
 
 function getOrCreateSessionId(): string {
   const existing = localStorage.getItem(SESSION_STORAGE_KEY);
@@ -34,24 +34,45 @@ function getOrCreateSessionId(): string {
 
 const USE_STREAMING = true;
 
+// ── Loading skeleton shown while history fetch is in progress ────────────────
+const HistorySkeleton: React.FC = () => (
+  <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: "16px" }}>
+    {[0.6, 0.85, 0.5].map((opacity, i) => (
+      <div key={i} style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+        {/* Avatar placeholder */}
+        <div style={{
+          width: "32px", height: "32px", borderRadius: "50%",
+          background: "#1f2937", flexShrink: 0,
+        }} />
+        {/* Bubble placeholder */}
+        <div style={{
+          height: "48px", flex: 1, maxWidth: "60%",
+          borderRadius: "12px", background: "#1f2937", opacity,
+        }} />
+      </div>
+    ))}
+  </div>
+);
+// ────────────────────────────────────────────────────────────────────────────
+
 const ChatWindow: React.FC = () => {
-  const [sessionId, setSessionId]       = useState<string>(getOrCreateSessionId);
-  const [messages, setMessages]         = useState<Message[]>([]);
-  const [input, setInput]               = useState("");
-  const [isThinking, setIsThinking]     = useState(false);
-  const [isStreaming, setIsStreaming]    = useState(false);
-  const [error, setError]               = useState<string | null>(null);
-  const [streamingId, setStreamingId]   = useState<string | null>(null);
+  const [sessionId,     setSessionId]     = useState<string>(getOrCreateSessionId);
+  const [messages,      setMessages]      = useState<Message[]>([]);
+  const [input,         setInput]         = useState("");
+  const [isThinking,    setIsThinking]    = useState(false);
+  const [isStreaming,   setIsStreaming]   = useState(false);
+  const [error,         setError]         = useState<string | null>(null);
+  const [streamingId,   setStreamingId]   = useState<string | null>(null);
   const [historyLoaded, setHistoryLoaded] = useState(false);
 
   // Sprint 3.12 — execution timeline state
-  const [activeStages, setActiveStages]     = useState<ExecutionStageEvent[]>([]);
+  const [activeStages,   setActiveStages]   = useState<ExecutionStageEvent[]>([]);
   const [timelineActive, setTimelineActive] = useState(false);
 
-  const messagesEndRef    = useRef<HTMLDivElement>(null);
-  const inputRef          = useRef<HTMLTextAreaElement>(null);
-  const shouldAutoScroll  = useRef(true);
-  const containerRef      = useRef<HTMLDivElement>(null);
+  const messagesEndRef   = useRef<HTMLDivElement>(null);
+  const inputRef         = useRef<HTMLTextAreaElement>(null);
+  const shouldAutoScroll = useRef(true);
+  const containerRef     = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = useCallback(() => {
     if (shouldAutoScroll.current) {
@@ -59,7 +80,9 @@ const ChatWindow: React.FC = () => {
     }
   }, []);
 
-  // ── History restore ──────────────────────────────────────────────────
+  // ── History restore ────────────────────────────────────────────────────────
+  // Runs whenever sessionId changes — covers initial load and sidebar selection.
+  // historyLoaded gates the render: skeleton shows until this is true.
   useEffect(() => {
     let cancelled = false;
     setHistoryLoaded(false);
@@ -73,8 +96,8 @@ const ChatWindow: React.FC = () => {
         if (data.history && data.history.length > 0) {
           const restored: Message[] = data.history.map(
             (m: { role: string; content: string }) => ({
-              id: crypto.randomUUID(),
-              role: m.role as "user" | "assistant",
+              id:      crypto.randomUUID(),
+              role:    m.role as "user" | "assistant",
               content: m.content,
             })
           );
@@ -83,7 +106,7 @@ const ChatWindow: React.FC = () => {
           setMessages([]);
         }
       } catch {
-        // silent
+        // Network error — show empty state rather than hanging on skeleton
       } finally {
         if (!cancelled) setHistoryLoaded(true);
       }
@@ -93,7 +116,7 @@ const ChatWindow: React.FC = () => {
     return () => { cancelled = true; };
   }, [sessionId]);
 
-  // Listen for session changes from sidebar
+  // ── Listen for session selection from Sidebar ──────────────────────────────
   useEffect(() => {
     const handler = (e: CustomEvent<string>) => {
       localStorage.setItem(SESSION_STORAGE_KEY, e.detail);
@@ -105,11 +128,10 @@ const ChatWindow: React.FC = () => {
       shouldAutoScroll.current = true;
     };
     window.addEventListener("tarka:select-session", handler as EventListener);
-    return () =>
-      window.removeEventListener("tarka:select-session", handler as EventListener);
+    return () => window.removeEventListener("tarka:select-session", handler as EventListener);
   }, []);
 
-  // Listen for new chat from sidebar
+  // ── Listen for new chat from Sidebar ──────────────────────────────────────
   useEffect(() => {
     const handler = () => {
       const newId = crypto.randomUUID();
@@ -142,7 +164,7 @@ const ChatWindow: React.FC = () => {
       ? crypto.randomUUID()
       : Math.random().toString(36).slice(2);
 
-  // ── Send ─────────────────────────────────────────────────────────────
+  // ── Send ───────────────────────────────────────────────────────────────────
   const handleSend = async (overrideMessage?: string) => {
     const trimmed = (overrideMessage ?? input).trim();
     if (!trimmed || isThinking || isStreaming) return;
@@ -151,11 +173,7 @@ const ChatWindow: React.FC = () => {
     if (!overrideMessage) setInput("");
     shouldAutoScroll.current = true;
 
-    const userMessage: Message = {
-      id: generateId(),
-      role: "user",
-      content: trimmed,
-    };
+    const userMessage: Message = { id: generateId(), role: "user", content: trimmed };
     setMessages((prev) => [...prev, userMessage]);
 
     if (USE_STREAMING) {
@@ -165,7 +183,7 @@ const ChatWindow: React.FC = () => {
     }
   };
 
-  // ── Regenerate ───────────────────────────────────────────────────────
+  // ── Regenerate ─────────────────────────────────────────────────────────────
   const handleRegenerate = useCallback(async () => {
     if (isThinking || isStreaming) return;
     const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
@@ -192,13 +210,11 @@ const ChatWindow: React.FC = () => {
 
   const handleStreamingResponse = async (message: string) => {
     setIsThinking(true);
-
-    // Reset timeline for this request
     setActiveStages([]);
     setTimelineActive(true);
 
     const assistantId = generateId();
-    let firstChunk = true;
+    let firstChunk    = true;
 
     try {
       await sendMessageStreaming(
@@ -233,7 +249,6 @@ const ChatWindow: React.FC = () => {
           setIsStreaming(false);
           setStreamingId(null);
           setTimelineActive(false);
-          // Keep stages visible but mark as inactive (all checks shown)
           if (metadata) {
             setMessages((prev) =>
               prev.map((msg) =>
@@ -241,7 +256,8 @@ const ChatWindow: React.FC = () => {
               )
             );
           }
-          // Clear timeline after a short pause so the user sees completion
+          // Notify Sidebar to refresh session list immediately
+          window.dispatchEvent(new Event("tarka:session-updated"));
           setTimeout(() => setActiveStages([]), 2000);
         },
 
@@ -254,16 +270,13 @@ const ChatWindow: React.FC = () => {
           setActiveStages([]);
           setError(errorMessage);
           setMessages((prev) =>
-            prev.filter(
-              (msg) => !(msg.id === assistantId && msg.content === "")
-            )
+            prev.filter((msg) => !(msg.id === assistantId && msg.content === ""))
           );
         },
 
         // onStageUpdate — Sprint 3.12
         (event: ExecutionStageEvent) => {
           setActiveStages((prev) => [...prev, event]);
-          // When first stage arrives, stop the plain thinking indicator
           setIsThinking(false);
         }
       );
@@ -285,6 +298,7 @@ const ChatWindow: React.FC = () => {
         ...prev,
         { id: generateId(), role: "assistant", content: response, metadata },
       ]);
+      window.dispatchEvent(new Event("tarka:session-updated"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unexpected error");
     } finally {
@@ -299,12 +313,8 @@ const ChatWindow: React.FC = () => {
     }
   };
 
-  const disabled = isThinking || isStreaming;
-
-  // ── Whether to show the timeline ─────────────────────────────────────
-  // Show when we have stages OR when we are still in the plain thinking
-  // state before the first stage arrives.
-  const showTimeline = activeStages.length > 0;
+  const disabled            = isThinking || isStreaming;
+  const showTimeline        = activeStages.length > 0;
   const showTypingIndicator = isThinking && !showTimeline;
 
   return (
@@ -312,44 +322,35 @@ const ChatWindow: React.FC = () => {
       <style>{`
         @keyframes blink {
           0%, 100% { opacity: 1; }
-          50%       { opacity: 0; }
+          50%       { opacity: 0;  }
         }
       `}</style>
 
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          height: "100%",
-          background: "#111827",
-          color: "#e5e7eb",
-          fontFamily: "'Inter', 'Segoe UI', sans-serif",
-        }}
-      >
+      <div style={{
+        display:    "flex",
+        flexDirection: "column",
+        height:     "100%",
+        background: "#111827",
+        color:      "#e5e7eb",
+        fontFamily: "'Inter', 'Segoe UI', sans-serif",
+      }}>
+
         {/* Error banner */}
         {error && (
-          <div
-            style={{
-              background: "#7f1d1d",
-              color: "#fca5a5",
-              padding: "10px 24px",
-              fontSize: "13px",
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              flexShrink: 0,
-            }}
-          >
+          <div style={{
+            background:     "#7f1d1d",
+            color:          "#fca5a5",
+            padding:        "10px 24px",
+            fontSize:       "13px",
+            display:        "flex",
+            justifyContent: "space-between",
+            alignItems:     "center",
+            flexShrink:     0,
+          }}>
             <span>Error: {error}</span>
             <button
               onClick={() => setError(null)}
-              style={{
-                background: "none",
-                border: "none",
-                color: "#fca5a5",
-                cursor: "pointer",
-                fontSize: "16px",
-              }}
+              style={{ background: "none", border: "none", color: "#fca5a5", cursor: "pointer", fontSize: "16px" }}
             >
               ×
             </button>
@@ -361,16 +362,25 @@ const ChatWindow: React.FC = () => {
           ref={containerRef}
           onScroll={handleScroll}
           style={{
-            flex: 1,
-            overflowY: "auto",
-            padding: "20px 0",
+            flex:          1,
+            overflowY:     "auto",
+            padding:       "20px 0",
             scrollbarWidth: "thin",
             scrollbarColor: "#374151 transparent",
           }}
         >
-          {messages.length === 0 && !isThinking && !showTimeline && historyLoaded ? (
+          {/* ── Sprint 3.21.1: three render states ── */}
+
+          {/* 1. History is loading — show skeleton */}
+          {!historyLoaded && <HistorySkeleton />}
+
+          {/* 2. History loaded, no messages — show empty state */}
+          {historyLoaded && messages.length === 0 && !isThinking && !showTimeline && (
             <EmptyState onPrompt={(text) => handleSend(text)} />
-          ) : (
+          )}
+
+          {/* 3. History loaded, messages exist — show conversation */}
+          {historyLoaded && (messages.length > 0 || isThinking || showTimeline) && (
             <>
               {messages.map((msg) => (
                 <MessageBubble
@@ -386,69 +396,57 @@ const ChatWindow: React.FC = () => {
 
               {/* Sprint 3.12 — Agent execution timeline */}
               {showTimeline && (
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "flex-start",
-                    padding: "0 8px",
-                    marginBottom: "12px",
-                  }}
-                >
-                  {/* Tarka avatar — aligned with assistant bubbles */}
-                  <div
-                    style={{
-                      width: "32px",
-                      height: "32px",
-                      borderRadius: "50%",
-                      background: "#6366f1",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: "14px",
-                      fontWeight: 700,
-                      color: "#fff",
-                      flexShrink: 0,
-                      marginRight: "10px",
-                      alignSelf: "flex-start",
-                      marginTop: "4px",
-                    }}
-                  >
+                <div style={{
+                  display:       "flex",
+                  justifyContent: "flex-start",
+                  padding:       "0 8px",
+                  marginBottom:  "12px",
+                }}>
+                  <div style={{
+                    width:          "32px",
+                    height:         "32px",
+                    borderRadius:   "50%",
+                    background:     "#6366f1",
+                    display:        "flex",
+                    alignItems:     "center",
+                    justifyContent: "center",
+                    fontSize:       "14px",
+                    fontWeight:     700,
+                    color:          "#fff",
+                    flexShrink:     0,
+                    marginRight:    "10px",
+                    alignSelf:      "flex-start",
+                    marginTop:      "4px",
+                  }}>
                     T
                   </div>
-                  <AgentTimeline
-                    stages={activeStages}
-                    isActive={timelineActive}
-                  />
+                  <AgentTimeline stages={activeStages} isActive={timelineActive} />
                 </div>
               )}
 
-              {/* Plain typing indicator before first stage arrives */}
               {showTypingIndicator && <TypingIndicator />}
             </>
           )}
+
           <div ref={messagesEndRef} />
         </div>
 
         {/* Input bar */}
-        <div
-          style={{
-            padding: "16px 24px",
-            background: "#1f2937",
-            borderTop: "1px solid #374151",
-            flexShrink: 0,
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              gap: "10px",
-              alignItems: "flex-end",
-              background: "#111827",
-              border: "1px solid #374151",
-              borderRadius: "12px",
-              padding: "10px 14px",
-            }}
-          >
+        <div style={{
+          padding:    "16px 24px",
+          background: "#1f2937",
+          borderTop:  "1px solid #374151",
+          flexShrink: 0,
+        }}>
+          <div style={{
+            display:    "flex",
+            gap:        "10px",
+            alignItems: "flex-end",
+            background: "#111827",
+            border:     "1px solid #374151",
+            borderRadius: "12px",
+            padding:    "10px 14px",
+          }}>
             <textarea
               ref={inputRef}
               value={input}
@@ -458,47 +456,45 @@ const ChatWindow: React.FC = () => {
               disabled={disabled}
               rows={1}
               style={{
-                flex: 1,
-                background: "transparent",
-                border: "none",
-                outline: "none",
-                color: "#e5e7eb",
-                fontSize: "14px",
-                resize: "none",
-                fontFamily: "inherit",
-                lineHeight: "1.5",
-                maxHeight: "120px",
-                overflowY: "auto",
-                opacity: disabled ? 0.5 : 1,
+                flex:        1,
+                background:  "transparent",
+                border:      "none",
+                outline:     "none",
+                color:       "#e5e7eb",
+                fontSize:    "14px",
+                resize:      "none",
+                fontFamily:  "inherit",
+                lineHeight:  "1.5",
+                maxHeight:   "120px",
+                overflowY:   "auto",
+                opacity:     disabled ? 0.5 : 1,
               }}
             />
             <button
               onClick={() => handleSend()}
               disabled={!input.trim() || disabled}
               style={{
-                background: !input.trim() || disabled ? "#374151" : "#6366f1",
-                color: "#fff",
-                border: "none",
+                background:   !input.trim() || disabled ? "#374151" : "#6366f1",
+                color:        "#fff",
+                border:       "none",
                 borderRadius: "8px",
-                padding: "8px 16px",
-                fontSize: "13px",
-                fontWeight: 600,
-                cursor: !input.trim() || disabled ? "not-allowed" : "pointer",
-                transition: "background 0.2s",
-                flexShrink: 0,
+                padding:      "8px 16px",
+                fontSize:     "13px",
+                fontWeight:   600,
+                cursor:       !input.trim() || disabled ? "not-allowed" : "pointer",
+                transition:   "background 0.2s",
+                flexShrink:   0,
               }}
             >
               {isStreaming ? "..." : "Send"}
             </button>
           </div>
-          <div
-            style={{
-              textAlign: "center",
-              fontSize: "11px",
-              color: "#4b5563",
-              marginTop: "6px",
-            }}
-          >
+          <div style={{
+            textAlign:  "center",
+            fontSize:   "11px",
+            color:      "#4b5563",
+            marginTop:  "6px",
+          }}>
             Enter to send · Shift+Enter for new line
           </div>
         </div>

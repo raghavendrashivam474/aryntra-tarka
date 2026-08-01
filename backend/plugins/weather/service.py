@@ -2,24 +2,34 @@
 """
 plugins/weather/service.py
 
-WeatherService - all Open-Meteo weather HTTP logic lives here.
+WeatherService - all Open-Meteo weather logic lives here.
 
-Sprint v1.5.2
+Sprint v1.5.2 -> v1.6.0 (Integration Framework Migration)
 
-The WeatherPlugin never makes HTTP calls directly.
-If Open-Meteo is replaced by another provider in the future,
-only this file changes.
-
-Changes from v1.5.1:
-    - get_weather() now accepts an optional pre-resolved ResolvedLocation.
-    - Location resolution is now the responsibility of LocationResolver.
-    - WeatherService is now a pure weather fetcher.
+Changes from v1.5.2:
+    - _fetch_weather() now uses OpenMeteoWeatherProvider via the
+      integration framework instead of raw httpx calls.
+    - ping() now uses the integration framework.
+    - The local NetworkError class is removed.
+      IntegrationError from the framework is used instead.
+    - Weather code translation and response shaping are unchanged.
+    - Public interface is unchanged.
+    - tool.py requires zero modifications.
 """
 
-import httpx
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from backend.runtime.integrations import (
+    IntegrationClient,
+    IntegrationError,
+    execute_with_retry,
+)
+from backend.plugins.weather.providers import (
+    OpenMeteoGeocodingProvider,
+    OpenMeteoWeatherProvider,
+)
 from backend.plugins.weather.location_resolver import (
     LocationResolver,
     ResolvedLocation,
@@ -62,17 +72,22 @@ WEATHER_CODES: Dict[int, str] = {
     99: "Thunderstorm with Heavy Hail",
 }
 
-GEOCODING_URL   = "https://geocoding-api.open-meteo.com/v1/search"
-WEATHER_URL     = "https://api.open-meteo.com/v1/forecast"
-REQUEST_TIMEOUT = 10.0
+
+# ---------------------------------------------------------------------------
+# Provider instances (module-level singletons)
+# ---------------------------------------------------------------------------
+
+_weather_provider   = OpenMeteoWeatherProvider()
+_geocoding_provider = OpenMeteoGeocodingProvider()
 
 
 class WeatherService:
     """
     Handles all communication with Open-Meteo weather API.
 
-    In v1.5.2, location resolution is handled by LocationResolver before
-    this service is called. WeatherService is now a pure weather fetcher.
+    In v1.6.0, HTTP calls are delegated to the integration framework
+    via OpenMeteoWeatherProvider. WeatherService retains all business
+    logic: parameter construction, response mapping, error shaping.
     """
 
     def get_weather(
@@ -103,7 +118,7 @@ class WeatherService:
                 latitude  = resolved.latitude,
                 longitude = resolved.longitude,
             )
-        except NetworkError as exc:
+        except IntegrationError as exc:
             return self._error(str(exc), "network_error")
 
         return {
@@ -123,29 +138,21 @@ class WeatherService:
     def ping(self) -> bool:
         """Health check. Returns True if Open-Meteo geocoding endpoint responds."""
         try:
-            with httpx.Client(timeout=5.0) as client:
-                resp = client.get(GEOCODING_URL, params={"name": "London", "count": 1})
-                return resp.status_code == 200
+            asyncio.run(self._ping_async())
+            return True
         except Exception:
             return False
 
     def _fetch_weather(self, latitude: float, longitude: float) -> Dict[str, Any]:
-        params = {
-            "latitude":         latitude,
-            "longitude":        longitude,
-            "current": [
-                "temperature_2m",
-                "apparent_temperature",
-                "wind_speed_10m",
-                "weather_code",
-                "is_day",
-            ],
-            "wind_speed_unit":  "kmh",
-            "temperature_unit": "celsius",
-            "forecast_days":    1,
-        }
+        """
+        Fetch current weather via the integration framework.
 
-        raw     = self._get(WEATHER_URL, params)
+        Bridges sync -> async using asyncio.run().
+        """
+        raw = asyncio.run(
+            self._fetch_weather_async(latitude, longitude)
+        )
+
         current = raw.get("current", {})
         code    = current.get("weather_code", -1)
 
@@ -157,18 +164,32 @@ class WeatherService:
             "is_day":      bool(current.get("is_day", 1)),
         }
 
-    def _get(self, url: str, params: Dict) -> Dict:
-        try:
-            with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
-                response = client.get(url, params=params)
-                response.raise_for_status()
-                return response.json()
-        except httpx.TimeoutException:
-            raise NetworkError(f"Request timed out: {url}")
-        except httpx.HTTPStatusError as exc:
-            raise NetworkError(f"HTTP {exc.response.status_code} from {url}")
-        except httpx.RequestError as exc:
-            raise NetworkError(f"Network failure: {exc}")
+    async def _fetch_weather_async(
+        self,
+        latitude: float,
+        longitude: float,
+    ) -> Dict[str, Any]:
+        """Async implementation using the integration framework."""
+        async with IntegrationClient() as client:
+            return await execute_with_retry(
+                operation=lambda: _weather_provider.fetch(
+                    client,
+                    latitude=latitude,
+                    longitude=longitude,
+                ),
+                policy=_weather_provider.retry_policy,
+                provider=_weather_provider.name,
+                operation_name="fetch_weather",
+            )
+
+    async def _ping_async(self) -> Dict[str, Any]:
+        """Async health check using the geocoding provider."""
+        async with IntegrationClient() as client:
+            return await _geocoding_provider.fetch(
+                client,
+                query="London",
+                country_code="",
+            )
 
     @staticmethod
     def _translate_code(code: int) -> str:
@@ -197,7 +218,3 @@ class WeatherService:
             result["suggestions"]  = exc.suggestions
             result["did_you_mean"] = [s["label"] for s in exc.suggestions]
         return result
-
-
-class NetworkError(Exception):
-    """Raised on any HTTP or connectivity failure inside WeatherService."""

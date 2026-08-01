@@ -4,32 +4,34 @@ plugins/weather/location_resolver.py
 
 LocationResolver - Intelligent location resolution for the Weather Plugin.
 
-Sprint v1.5.2
+Sprint v1.5.2 -> v1.6.0 (Integration Framework Migration)
 
-Responsibilities:
-    1. Normalize raw user input  (strip filler words, extract location)
-    2. Geocode using Open-Meteo  (fetch up to 10 candidates)
-    3. Score all candidates      (exact match, country hint, population)
-    4. Return best match         (structured metadata + confidence)
-    5. Return structured errors  (not found, suggestions, network failure)
-
-This module is self-contained inside the plugin boundary.
-The Runtime, Planner, Registry, and API are not touched.
+Changes from v1.5.2:
+    - _geocode() now uses OpenMeteoGeocodingProvider via the
+      integration framework instead of raw httpx calls.
+    - All normalization, scoring, and suggestion logic is unchanged.
+    - Public interface is unchanged.
+    - tool.py requires zero modifications.
 """
 
 import re
 import math
-import httpx
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+
+from backend.runtime.integrations import (
+    IntegrationClient,
+    IntegrationError,
+    execute_with_retry,
+)
+from backend.plugins.weather.providers import OpenMeteoGeocodingProvider
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-GEOCODING_URL   = "https://geocoding-api.open-meteo.com/v1/search"
-REQUEST_TIMEOUT = 10.0
-MAX_CANDIDATES  = 10
+MAX_CANDIDATES = 10
 
 _FILLER_WORDS = [
     r"\bweather\b",
@@ -153,6 +155,13 @@ class LocationNetworkError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# Provider instance (module-level singleton)
+# ---------------------------------------------------------------------------
+
+_geocoding_provider = OpenMeteoGeocodingProvider()
+
+
+# ---------------------------------------------------------------------------
 # Resolver
 # ---------------------------------------------------------------------------
 
@@ -238,7 +247,7 @@ class LocationResolver:
         )
 
     # ------------------------------------------------------------------
-    # Private - Normalization
+    # Private - Normalization (unchanged)
     # ------------------------------------------------------------------
 
     def _normalize(self, raw: str) -> Tuple[str, str]:
@@ -247,15 +256,6 @@ class LocationResolver:
 
         The qualifier is whatever comes after the first comma, or the
         second token if two tokens remain after filler stripping.
-
-        Examples:
-            "weather in Delhi, India"          -> ("Delhi",  "India")
-            "Paris, France"                    -> ("Paris",  "France")
-            "Paris, Texas"                     -> ("Paris",  "Texas")
-            "Cambridge, UK"                    -> ("Cambridge", "UK")
-            "how is the weather in Delhi today" -> ("Delhi",  "")
-            "weather delhi"                    -> ("Delhi",  "")
-            "Delhi weather"                    -> ("Delhi",  "")
 
         Returns:
             (normalized_query, qualifier)
@@ -293,7 +293,7 @@ class LocationResolver:
         return (text, qualifier)
 
     # ------------------------------------------------------------------
-    # Private - Geocoding
+    # Private - Geocoding (migrated to integration framework)
     # ------------------------------------------------------------------
 
     def _geocode(
@@ -302,49 +302,46 @@ class LocationResolver:
         api_country_code: str,
     ) -> List[Dict]:
         """
-        Fetches up to MAX_CANDIDATES geocoding results from Open-Meteo.
+        Fetches geocoding results via OpenMeteoGeocodingProvider.
 
-        api_country_code is only passed to the API when it is a valid
-        2-letter ISO country code. Full-word qualifiers like "Texas" or
-        "France" are handled entirely in scoring, not in the API call,
-        so that all candidate cities named Paris are returned regardless
-        of country.
+        Uses the integration framework for HTTP communication, timeouts,
+        retries, logging, and error mapping.
 
         Returns list of raw result dicts.
         Raises LocationNetworkError on connectivity failure.
         """
-        params: Dict[str, Any] = {
-            "name":     query,
-            "count":    MAX_CANDIDATES,
-            "language": "en",
-            "format":   "json",
-        }
-
-        if api_country_code:
-            params["country"] = api_country_code
-
         try:
-            with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
-                response = client.get(GEOCODING_URL, params=params)
-                response.raise_for_status()
-                data = response.json()
-        except httpx.TimeoutException:
-            raise LocationNetworkError(
-                f"Geocoding request timed out for query: '{query}'"
+            data = asyncio.run(
+                self._geocode_async(query, api_country_code)
             )
-        except httpx.HTTPStatusError as exc:
-            raise LocationNetworkError(
-                f"Geocoding HTTP {exc.response.status_code} for query: '{query}'"
-            )
-        except httpx.RequestError as exc:
-            raise LocationNetworkError(
-                f"Geocoding network failure for query: '{query}' - {exc}"
-            )
+        except IntegrationError as exc:
+            raise LocationNetworkError(str(exc)) from exc
 
         return data.get("results") or []
 
+    async def _geocode_async(
+        self,
+        query: str,
+        api_country_code: str,
+    ) -> Dict[str, Any]:
+        """
+        Async implementation that uses the integration framework.
+        Called by _geocode() via asyncio.run().
+        """
+        async with IntegrationClient() as client:
+            return await execute_with_retry(
+                operation=lambda: _geocoding_provider.fetch(
+                    client,
+                    query=query,
+                    country_code=api_country_code,
+                ),
+                policy=_geocoding_provider.retry_policy,
+                provider=_geocoding_provider.name,
+                operation_name="geocode",
+            )
+
     # ------------------------------------------------------------------
-    # Private - Scoring
+    # Private - Scoring (unchanged)
     # ------------------------------------------------------------------
 
     def _score_candidates(
@@ -356,21 +353,6 @@ class LocationResolver:
         """
         Scores each geocoding candidate and returns them sorted
         descending by score.
-
-        Qualifier routing:
-            The qualifier (e.g. "France", "Texas", "UK", "IN") is tested
-            against BOTH the candidate country AND the candidate admin1
-            region. Whichever matches gets the bonus. If neither matches
-            and a qualifier was provided, a penalty is applied.
-
-        Scoring factors:
-            +50  exact city name match (case-insensitive)
-            +30  qualifier matches country name or country code
-            +20  qualifier matches admin1 region
-            +15  population bonus (logarithmic scale)
-            + 5  first position bonus
-            -25  qualifier present but candidate matches neither country
-                 nor admin region
         """
         scored = []
 
@@ -406,8 +388,6 @@ class LocationResolver:
                 elif admin_match:
                     score += _WEIGHT_ADMIN_HINT
                 else:
-                    # Qualifier was stated but this candidate does not match
-                    # it as either country or admin region.
                     score -= _PENALTY_QUALIFIER_MISS
 
             # Population bonus (logarithmic scale)
@@ -425,7 +405,7 @@ class LocationResolver:
         return scored
 
     # ------------------------------------------------------------------
-    # Private - Suggestion formatting
+    # Private - Suggestion formatting (unchanged)
     # ------------------------------------------------------------------
 
     def _format_suggestions(

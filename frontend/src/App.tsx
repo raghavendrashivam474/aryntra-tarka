@@ -4,6 +4,7 @@ import { Layout } from "./components/Layout";
 import ChatWindow from "./components/ChatWindow";
 import { SettingsPage } from "./pages/Settings";
 import CommandCenterPage from "./pages/CommandCenterPage";
+import PluginsPage from "./pages/PluginsPage";
 
 const App: React.FC = () => {
   return (
@@ -18,7 +19,8 @@ const App: React.FC = () => {
           element={
             <Layout>
               <Routes>
-                <Route path="/" element={<ChatWindow />} />
+                <Route path="/"        element={<ChatWindow />} />
+                <Route path="/plugins" element={<PluginsPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
               </Routes>
             </Layout>

@@ -1,4 +1,4 @@
-// frontend/src/components/VersionFooter.tsx
+﻿// frontend/src/components/VersionFooter.tsx
 import React from 'react'
 import { APP_VERSION, APP_NAME } from '../constants/version'
 
@@ -9,7 +9,7 @@ export const VersionFooter: React.FC = () => (
     flex items-center justify-center
   ">
     <p className="text-xs text-white/20 font-mono select-none">
-      {APP_NAME} · v{APP_VERSION}
+      {APP_NAME} &middot; v{APP_VERSION}
     </p>
   </div>
 )

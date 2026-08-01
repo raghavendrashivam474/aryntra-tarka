@@ -1,20 +1,24 @@
 ﻿// services/api.ts
-// Sprint 3.12 — onStageUpdate callback added to sendMessageStreaming.
-// Parses stage_event SSE chunks and forwards them to the caller.
-// Existing onChunk, onDone, onError signatures unchanged.
+// Sprint 3.12  - onStageUpdate callback added to sendMessageStreaming.
+// v1.5         - Plugin and Tool API calls added.
 
 import type { ChatResponse, ExecutionMetadata, ExecutionStageEvent } from "../types";
+import type { PluginListResponse, AllToolsResponse, ExecuteResult } from "../types/plugins";
 
 const API_BASE = "http://localhost:8000";
 
+// ---------------------------------------------------------------------------
+// Chat
+// ---------------------------------------------------------------------------
+
 export async function sendMessage(
-  message: string,
+  message:   string,
   sessionId: string
 ): Promise<{ response: string; metadata?: ExecutionMetadata }> {
   const res = await fetch(`${API_BASE}/api/chat`, {
-    method: "POST",
+    method:  "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, session_id: sessionId }),
+    body:    JSON.stringify({ message, session_id: sessionId }),
   });
 
   if (!res.ok) throw new Error(`Server returned ${res.status}`);
@@ -24,17 +28,17 @@ export async function sendMessage(
 }
 
 export async function sendMessageStreaming(
-  message: string,
-  sessionId: string,
-  onChunk: (chunk: string) => void,
-  onDone: (metadata?: ExecutionMetadata) => void,
-  onError: (error: string) => void,
+  message:       string,
+  sessionId:     string,
+  onChunk:       (chunk: string) => void,
+  onDone:        (metadata?: ExecutionMetadata) => void,
+  onError:       (error: string) => void,
   onStageUpdate?: (event: ExecutionStageEvent) => void
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/api/chat/stream`, {
-    method: "POST",
+    method:  "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, session_id: sessionId }),
+    body:    JSON.stringify({ message, session_id: sessionId }),
   });
 
   if (!res.ok) {
@@ -49,7 +53,7 @@ export async function sendMessageStreaming(
   }
 
   const decoder = new TextDecoder();
-  let buffer = "";
+  let buffer        = "";
   let finalMetadata: ExecutionMetadata | undefined;
 
   while (true) {
@@ -77,7 +81,6 @@ export async function sendMessageStreaming(
           return;
         }
 
-        // Sprint 3.12 — execution stage event
         if (parsed.stage_event && onStageUpdate) {
           onStageUpdate(parsed.stage_event as ExecutionStageEvent);
           continue;
@@ -92,10 +95,39 @@ export async function sendMessageStreaming(
           onChunk(parsed.content);
         }
       } catch {
-        // malformed chunk — skip
+        // malformed chunk - skip
       }
     }
   }
 
   onDone(finalMetadata);
+}
+
+// ---------------------------------------------------------------------------
+// Plugins
+// ---------------------------------------------------------------------------
+
+export async function fetchPlugins(): Promise<PluginListResponse> {
+  const res = await fetch(`${API_BASE}/api/plugins/`);
+  if (!res.ok) throw new Error(`Failed to fetch plugins: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchAllTools(): Promise<AllToolsResponse> {
+  const res = await fetch(`${API_BASE}/api/plugins/all`);
+  if (!res.ok) throw new Error(`Failed to fetch tools: ${res.status}`);
+  return res.json();
+}
+
+export async function executeTool(
+  tool:      string,
+  args:      Record<string, unknown>
+): Promise<ExecuteResult> {
+  const res = await fetch(`${API_BASE}/api/plugins/execute`, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({ tool, arguments: args }),
+  });
+  if (!res.ok) throw new Error(`Execution failed: ${res.status}`);
+  return res.json();
 }

@@ -1,9 +1,10 @@
 ﻿// frontend/src/components/TopBar.tsx
-// Sprint 3.21.1 — Theme toggle + Settings link added.
+// Sprint 3.21.1 - Theme toggle + Settings link.
+// v1.5          - Plugins link added.
 
 import React from "react";
 import { Link } from "react-router-dom";
-import { Menu, Zap, Moon, Sun, Monitor, Settings } from "lucide-react";
+import { Menu, Zap, Moon, Sun, Monitor, Settings, Puzzle } from "lucide-react";
 import type { Theme } from "../hooks/useTheme";
 
 interface TopBarProps {
@@ -46,7 +47,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           </div>
           <div>
             <div className="text-sm font-semibold leading-tight">Aryntra Tarka</div>
-            <div className="text-[10px] text-white/40 leading-tight">v1.0.0</div>
+            <div className="text-[10px] text-white/40 leading-tight">v1.5.0</div>
           </div>
         </Link>
       </div>
@@ -63,6 +64,16 @@ export const TopBar: React.FC<TopBarProps> = ({
         >
           <ThemeIcon size={18} />
         </button>
+
+        {/* Plugins link */}
+        <Link
+          to="/plugins"
+          className="p-2 rounded-md text-white/50 hover:text-white/90 hover:bg-white/5 transition-colors duration-150"
+          title="Plugins"
+          aria-label="View installed plugins"
+        >
+          <Puzzle size={18} />
+        </Link>
 
         {/* Settings link */}
         <Link

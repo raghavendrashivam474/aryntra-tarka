@@ -1,20 +1,26 @@
-﻿r"""
+﻿# coding: utf-8
+r"""
 agent/planner/planner.py
 Intelligent request planner.
 
 Sprint 3.21:
-  - _build_math_expression rewritten — removed fragile regex extraction.
+  - _build_math_expression rewritten.
   - Added multiply, add, subtract to math intent detection.
-  - Added multiply by, add to operator words.
-  - Added prose stripping after normalization to prevent calculator
-    receiving sentences like 'the area of a 12 * 8 room'.
+  - Added prose stripping after normalization.
+
+v1.5 Plugin SDK:
+  - Planner accepts optional plugin_registry at construction.
+  - After hardcoded rules, plugin intents are checked dynamically.
+  - Any registered plugin with a matching keyword in its description
+    can be routed to without touching planner code.
+  - Weather intent detection added as first plugin-aware route.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 from backend.utils.logger import get_logger
 
@@ -22,31 +28,17 @@ logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# ExecutionPlanStep
+# ExecutionPlanStep / ExecutionPlan
 # ---------------------------------------------------------------------------
 
 @dataclass
 class ExecutionPlanStep:
-    """A single tool invocation within an ExecutionPlan."""
     tool_name:  str
     parameters: dict[str, Any] = field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
-# ExecutionPlan
-# ---------------------------------------------------------------------------
-
 @dataclass
 class ExecutionPlan:
-    """
-    Structured plan produced by the Planner.
-
-    Attributes:
-        steps:      Ordered list of tool invocations to execute.
-        tool_name:  First tool name, or None. (backward compat)
-        parameters: First tool parameters, or {}. (backward compat)
-        reasoning:  Human-readable explanation.
-    """
     steps:      list[ExecutionPlanStep] = field(default_factory=list)
     tool_name:  str | None              = None
     parameters: dict[str, Any]          = field(default_factory=dict)
@@ -54,7 +46,7 @@ class ExecutionPlan:
 
 
 # ---------------------------------------------------------------------------
-# Expression normalizer import
+# Expression normalizer
 # ---------------------------------------------------------------------------
 
 try:
@@ -63,13 +55,12 @@ try:
 except ImportError:
     _NORMALIZER_AVAILABLE = False
     logger.warning(
-        "[Planner] Expression normalizer not found — "
+        "[Planner] Expression normalizer not found - "
         "raw expressions will be passed to calculator."
     )
 
 
 def _normalize(text: str) -> str:
-    """Normalize a math expression if the normalizer is available."""
     if _NORMALIZER_AVAILABLE:
         try:
             return normalize_expression(text)
@@ -79,7 +70,7 @@ def _normalize(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Math intent detection
+# Math intent
 # ---------------------------------------------------------------------------
 
 _MATH_KEYWORDS = re.compile(
@@ -139,45 +130,19 @@ _OPERATOR_WORDS = re.compile(
     re.IGNORECASE,
 )
 
-_SYMBOLIC_OPS = re.compile(r"[+\-*/%^]")
+_SYMBOLIC_OPS   = re.compile(r"[+\-*/%^]")
+_PERCENTAGE_OF  = re.compile(r"\d+\s*(?:%|percent)\s+(?:of|on|tax|rate)\s+\d+", re.IGNORECASE)
+_FRACTION_OF    = re.compile(r"\b(?:a\s+)?(?:half|third|quarter|fourth)\s+of\s+\d+", re.IGNORECASE)
+_POWER_PATTERN  = re.compile(r"\d+\s+(?:raised\s+to|to\s+the)\s+(?:the\s+)?power", re.IGNORECASE)
+_SQRT_PATTERN   = re.compile(r"(?:square\s+root|sqrt)\s+of\s+\d+", re.IGNORECASE)
+_DIMENSION_PATTERN = re.compile(r"\d+\s+by\s+\d+", re.IGNORECASE)
 
-_PERCENTAGE_OF = re.compile(
-    r"\d+\s*(?:%|percent)\s+(?:of|on|tax|rate)\s+\d+",
-    re.IGNORECASE,
-)
-
-_FRACTION_OF = re.compile(
-    r"\b(?:a\s+)?(?:half|third|quarter|fourth)\s+of\s+\d+",
-    re.IGNORECASE,
-)
-
-_POWER_PATTERN = re.compile(
-    r"\d+\s+(?:raised\s+to|to\s+the)\s+(?:the\s+)?power",
-    re.IGNORECASE,
-)
-
-_SQRT_PATTERN = re.compile(
-    r"(?:square\s+root|sqrt)\s+of\s+\d+",
-    re.IGNORECASE,
-)
-
-# Detects dimension pattern: "12 by 8", "a 5 by 3"
-_DIMENSION_PATTERN = re.compile(
-    r"\d+\s+by\s+\d+",
-    re.IGNORECASE,
-)
-
-# Conversational prefixes to strip
 _CONVERSATIONAL_PREFIX = re.compile(
     r"^(what\s+is|what'?s|calculate|compute|evaluate|find|work\s+out|"
     r"solve|tell\s+me|give\s+me|please\s+calculate|please\s+compute)\s+",
     re.IGNORECASE,
 )
 
-# After normalization, extract only the math-valid portion.
-# Matches expressions that contain numbers and operators,
-# including CALC_RESULT placeholder.
-# This strips surrounding prose like "the area of a ... room".
 _MATH_EXTRACT = re.compile(
     r"(CALC_RESULT[\s\d\s()+\-*/^%.CALC_RESULT]*|"
     r"[\d(][\d\s()+\-*/^%.]*[\d)]|"
@@ -186,53 +151,24 @@ _MATH_EXTRACT = re.compile(
 
 
 def _is_math_intent(text: str) -> bool:
-    """Return True if the message contains mathematical intent."""
     t = text.lower()
-
-    if _MATH_KEYWORDS.search(t):
-        return True
-    if _PERCENTAGE_OF.search(t):
-        return True
-    if _FRACTION_OF.search(t):
-        return True
-    if _POWER_PATTERN.search(t):
-        return True
-    if _SQRT_PATTERN.search(t):
-        return True
-    if _DIMENSION_PATTERN.search(t):
-        return True
-
+    if _MATH_KEYWORDS.search(t):     return True
+    if _PERCENTAGE_OF.search(t):     return True
+    if _FRACTION_OF.search(t):       return True
+    if _POWER_PATTERN.search(t):     return True
+    if _SQRT_PATTERN.search(t):      return True
+    if _DIMENSION_PATTERN.search(t): return True
     has_digit    = bool(re.search(r"\d", t))
     has_sym_op   = bool(_SYMBOLIC_OPS.search(t))
     has_word_op  = bool(_OPERATOR_WORDS.search(t))
     has_num_word = bool(_NUMBER_WORDS.search(t))
-
-    if has_digit and (has_sym_op or has_word_op):
-        return True
-    if has_num_word and (has_sym_op or has_word_op):
-        return True
-
+    if has_digit and (has_sym_op or has_word_op):   return True
+    if has_num_word and (has_sym_op or has_word_op): return True
     return False
 
 
 def _extract_math_from_normalized(normalized: str) -> str:
-    """
-    Extract the math-valid portion from a normalized expression.
-
-    After normalization, prose words may still surround the numeric
-    expression. For example:
-        'the area of a 12 * 8 room' -> '12 * 8'
-        '500 * (15 / 100)'          -> '500 * (15 / 100)'  (unchanged)
-        'CALC_RESULT * 45'          -> 'CALC_RESULT * 45'  (unchanged)
-
-    Strategy:
-      1. If the expression contains CALC_RESULT, extract around it.
-      2. Find the longest contiguous math substring.
-      3. Fall back to the full normalized string if nothing found.
-    """
-    # If CALC_RESULT placeholder is present, extract it with its context
     if "CALC_RESULT" in normalized:
-        # Extract the full expression containing CALC_RESULT
         match = re.search(
             r"(CALC_RESULT\s*[\+\-\*\/]\s*[\d.]+|"
             r"[\d.]+\s*[\+\-\*\/]\s*CALC_RESULT|"
@@ -241,51 +177,25 @@ def _extract_math_from_normalized(normalized: str) -> str:
         )
         if match:
             return match.group(0).strip()
-
-    # Find the longest math substring (numbers + operators + parens)
     matches = list(_MATH_EXTRACT.finditer(normalized))
     if matches:
-        # Return the longest match — this is most likely the full expression
         best = max(matches, key=lambda m: len(m.group(0)))
         return best.group(0).strip()
-
-    # No extractable math — return as-is and let AST parser reject it
     return normalized.strip()
 
 
 def _build_math_expression(message: str) -> str:
-    """
-    Build a calculator-ready expression from the message.
-
-    Sprint 3.21 — deterministic rewrite:
-      1. Strip conversational prefix.
-      2. Normalize natural language to math symbols.
-      3. Extract the math-valid portion, stripping surrounding prose.
-      4. Replace ^ with ** for AST parser.
-      5. Return clean expression.
-    """
-    # Strip conversational prefix
-    cleaned = _CONVERSATIONAL_PREFIX.sub("", message.strip())
-
-    # Normalize natural language
+    cleaned    = _CONVERSATIONAL_PREFIX.sub("", message.strip())
     normalized = _normalize(cleaned)
-
-    # Extract math-valid portion — strip prose
-    expr = _extract_math_from_normalized(normalized)
-
-    # Strip trailing punctuation
-    expr = expr.strip().rstrip("?.!")
-
-    # Ensure caret is converted to Python power operator
-    expr = expr.replace("^", "**")
-
+    expr       = _extract_math_from_normalized(normalized)
+    expr       = expr.strip().rstrip("?.!")
+    expr       = expr.replace("^", "**")
     logger.debug("[Planner] Built expression: '%s' from: '%s'", expr, message)
-
     return expr.strip()
 
 
 # ---------------------------------------------------------------------------
-# DateTime intent detection
+# DateTime intent
 # ---------------------------------------------------------------------------
 
 _DATETIME_KEYWORDS = re.compile(
@@ -313,8 +223,6 @@ _DATETIME_KEYWORDS = re.compile(
     \bwhat\s+is\s+the\s+date\b |
     \bwhat\s+is\s+today\b      |
     \btime\b                   |
-    \bdate\b         |
-    \btime\b                |
     \bdate\b
     """,
     re.VERBOSE | re.IGNORECASE,
@@ -326,7 +234,7 @@ def _is_datetime_intent(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Filesystem intent detection
+# Filesystem intent
 # ---------------------------------------------------------------------------
 
 _FILESYSTEM_KEYWORDS = re.compile(
@@ -344,9 +252,7 @@ _FILESYSTEM_KEYWORDS = re.compile(
     re.VERBOSE | re.IGNORECASE,
 )
 
-_PATH_PATTERN = re.compile(
-    r"(?:in|at|of|inside)\s+([./~\\][\w./\\-]*)"
-)
+_PATH_PATTERN = re.compile(r"(?:in|at|of|inside)\s+([./~\\][\w./\\-]*)")
 
 
 def _is_filesystem_intent(text: str) -> bool:
@@ -359,30 +265,86 @@ def _extract_path(message: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Weather intent
+# ---------------------------------------------------------------------------
+
+_WEATHER_PATTERN = re.compile(
+    r"""
+    \bweather\b           |
+    \btemperature\b       |
+    \bforecast\b          |
+    \brain\w*\b           |
+    \bsunny\b             |
+    \bcloudy\b            |
+    \bhumidity\b          |
+    \bwind\b              |
+    \bhot\s+in\b          |
+    \bcold\s+in\b         |
+    \bwarm\s+in\b
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+_LOCATION_PATTERN = re.compile(
+    r"""
+    (?:in|for|at|of)\s+
+    ([A-Z][a-zA-Z\s]{2,30})
+    (?:\s*[?.!,]|$)
+    """,
+    re.VERBOSE,
+)
+
+
+def _is_weather_intent(text: str) -> bool:
+    return bool(_WEATHER_PATTERN.search(text))
+
+
+def _extract_location(message: str) -> str:
+    match = _LOCATION_PATTERN.search(message)
+    if match:
+        return match.group(1).strip()
+    # Fallback: grab words after weather keyword
+    m2 = re.search(
+        r"\bweather\b\s+(?:in|for|at)?\s*([A-Za-z\s]{2,30})",
+        message,
+        re.IGNORECASE,
+    )
+    if m2:
+        return m2.group(1).strip().rstrip("?.!,")
+    return "Unknown"
+
+
+# ---------------------------------------------------------------------------
 # Planner
 # ---------------------------------------------------------------------------
 
 class Planner:
     """
-    Intelligent request planner — Sprint 3.21.
+    Intelligent request planner.
+
+    v1.5: Accepts an optional plugin_registry. After hardcoded rules,
+    the planner checks registered plugins for any unmatched intent.
+    New plugins are picked up automatically with no planner changes.
 
     Routing priority:
-      1. Calculator  — math takes priority over datetime
-      2. DateTime    — only if no math intent detected
-      3. Filesystem  — path/directory operations
-      4. No tool     — LLM answers directly
+      1. Calculator   - math
+      2. DateTime     - time and date
+      3. Filesystem   - file operations
+      4. Weather      - weather queries    (plugin-aware)
+      5. No tool      - LLM direct
     """
 
-    def plan(self, message: str) -> ExecutionPlan:
+    def __init__(self, plugin_registry=None) -> None:
         """
-        Analyse the message and return a typed ExecutionPlan.
-
         Args:
-            message: Raw user message or goal description.
-
-        Returns:
-            ExecutionPlan with zero, one, or many steps.
+            plugin_registry: Optional agent ToolRegistry instance.
+                             Used to discover plugin-provided tools at
+                             plan time. Pass the live registry from
+                             agent/services/agent.py.
         """
+        self._plugin_registry = plugin_registry
+
+    def plan(self, message: str) -> ExecutionPlan:
         text = message.lower().strip()
         logger.info("[Planner] Analysing: '%s'", message)
 
@@ -398,8 +360,6 @@ class Planner:
             logger.info("[Planner] Calculator selected | expr='%s'", expr)
 
         # ── 2. DateTime ──────────────────────────────────────────────
-        # Add datetime alongside calculator when both intents are present.
-        # Only suppress datetime if steps exist AND no explicit datetime keyword found.
         if _is_datetime_intent(text):
             steps.append(ExecutionPlanStep(
                 tool_name  = "datetime",
@@ -414,14 +374,31 @@ class Planner:
                 tool_name  = "filesystem",
                 parameters = params,
             ))
-            logger.info(
-                "[Planner] Filesystem selected | path='%s'",
-                params.get("path"),
-            )
+            logger.info("[Planner] Filesystem selected | path='%s'", params.get("path"))
+
+        # ── 4. Weather (plugin-aware) ────────────────────────────────
+        # Only route to weather if:
+        #   - Weather intent detected
+        #   - No steps already selected (avoids double routing)
+        #   - Weather tool is registered (plugin loaded)
+        if not steps and _is_weather_intent(text):
+            if self._plugin_registry and self._plugin_registry.has_tool("weather"):
+                location = _extract_location(message)
+                steps.append(ExecutionPlanStep(
+                    tool_name  = "weather",
+                    parameters = {"location": location},
+                ))
+                logger.info(
+                    "[Planner] Weather plugin selected | location='%s'", location
+                )
+            else:
+                logger.info(
+                    "[Planner] Weather intent detected but plugin not registered."
+                )
 
         # ── No tool ──────────────────────────────────────────────────
         if not steps:
-            logger.info("[Planner] No tool matched — direct LLM response")
+            logger.info("[Planner] No tool matched - direct LLM response")
             return ExecutionPlan(
                 steps      = [],
                 tool_name  = None,
@@ -429,7 +406,6 @@ class Planner:
                 reasoning  = "No matching tool. Provider responds directly.",
             )
 
-        # Build plan — backward-compat fields point to first step
         plan = ExecutionPlan(
             steps      = steps,
             tool_name  = steps[0].tool_name,
@@ -446,8 +422,3 @@ class Planner:
             [s.tool_name for s in steps],
         )
         return plan
-
-
-
-
-

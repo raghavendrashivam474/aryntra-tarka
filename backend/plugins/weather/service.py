@@ -4,20 +4,13 @@ plugins/weather/service.py
 
 WeatherService - all Open-Meteo weather logic lives here.
 
-Sprint v1.5.2 -> v1.6.0 (Integration Framework Migration)
-
-Changes from v1.5.2:
-    - _fetch_weather() now uses OpenMeteoWeatherProvider via the
-      integration framework instead of raw httpx calls.
-    - ping() now uses the integration framework.
-    - The local NetworkError class is removed.
-      IntegrationError from the framework is used instead.
-    - Weather code translation and response shaping are unchanged.
-    - Public interface is unchanged.
-    - tool.py requires zero modifications.
+Layer 3 upgrade:
+    get_weather() and _fetch_weather() are now fully async.
+    asyncio.run() removed entirely.
+    Cache check happens inside async context naturally.
 """
 
-import asyncio
+import httpx
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -26,12 +19,12 @@ from backend.runtime.integrations import (
     IntegrationError,
     execute_with_retry,
 )
+from backend.runtime.cache import cache, WEATHER_TTL
 from backend.plugins.weather.providers import (
     OpenMeteoGeocodingProvider,
     OpenMeteoWeatherProvider,
 )
 from backend.plugins.weather.location_resolver import (
-    LocationResolver,
     ResolvedLocation,
     LocationNotFoundError,
     LocationNetworkError,
@@ -39,7 +32,6 @@ from backend.plugins.weather.location_resolver import (
 
 # ---------------------------------------------------------------------------
 # Weather code translation table
-# Source: https://open-meteo.com/en/docs (WMO Weather interpretation codes)
 # ---------------------------------------------------------------------------
 WEATHER_CODES: Dict[int, str] = {
     0:  "Clear Sky",
@@ -72,9 +64,10 @@ WEATHER_CODES: Dict[int, str] = {
     99: "Thunderstorm with Heavy Hail",
 }
 
+CACHE_NAMESPACE = "weather"
 
 # ---------------------------------------------------------------------------
-# Provider instances (module-level singletons)
+# Provider instances
 # ---------------------------------------------------------------------------
 
 _weather_provider   = OpenMeteoWeatherProvider()
@@ -82,41 +75,19 @@ _geocoding_provider = OpenMeteoGeocodingProvider()
 
 
 class WeatherService:
-    """
-    Handles all communication with Open-Meteo weather API.
 
-    In v1.6.0, HTTP calls are delegated to the integration framework
-    via OpenMeteoWeatherProvider. WeatherService retains all business
-    logic: parameter construction, response mapping, error shaping.
-    """
-
-    def get_weather(
+    async def get_weather(
         self,
         city:     str,
         resolved: Optional[ResolvedLocation] = None,
     ) -> Dict[str, Any]:
         """
-        Main entry point.
-
-        Args:
-            city     - raw location string (used if resolved is None)
-            resolved - pre-resolved location from LocationResolver
-
-        Returns structured weather dict or structured error dict.
+        Main entry point. Fully async.
         """
-        if resolved is None:
-            resolver = LocationResolver()
-            try:
-                resolved = resolver.resolve(city)
-            except LocationNotFoundError as exc:
-                return self._not_found_error(exc)
-            except LocationNetworkError as exc:
-                return self._error(str(exc), "network_error")
-
         try:
-            weather = self._fetch_weather(
-                latitude  = resolved.latitude,
-                longitude = resolved.longitude,
+            weather = await self._fetch_weather(
+                latitude=resolved.latitude,
+                longitude=resolved.longitude,
             )
         except IntegrationError as exc:
             return self._error(str(exc), "network_error")
@@ -136,42 +107,41 @@ class WeatherService:
         }
 
     def ping(self) -> bool:
-        """Health check. Returns True if Open-Meteo geocoding endpoint responds."""
+        """
+        Sync health check for plugin bootstrap.
+        Uses plain httpx.Client — no event loop required.
+        """
         try:
-            asyncio.run(self._ping_async())
-            return True
+            with httpx.Client(timeout=10.0) as client:
+                response = client.get(
+                    "https://geocoding-api.open-meteo.com/v1/search",
+                    params={
+                        "name":     "London",
+                        "count":    1,
+                        "language": "en",
+                        "format":   "json",
+                    },
+                )
+                return response.is_success
         except Exception:
             return False
 
-    def _fetch_weather(self, latitude: float, longitude: float) -> Dict[str, Any]:
-        """
-        Fetch current weather via the integration framework.
-
-        Bridges sync -> async using asyncio.run().
-        """
-        raw = asyncio.run(
-            self._fetch_weather_async(latitude, longitude)
-        )
-
-        current = raw.get("current", {})
-        code    = current.get("weather_code", -1)
-
-        return {
-            "temperature": current.get("temperature_2m"),
-            "feels_like":  current.get("apparent_temperature"),
-            "wind_speed":  current.get("wind_speed_10m"),
-            "condition":   self._translate_code(code),
-            "is_day":      bool(current.get("is_day", 1)),
-        }
-
-    async def _fetch_weather_async(
+    async def _fetch_weather(
         self,
-        latitude: float,
+        latitude:  float,
         longitude: float,
     ) -> Dict[str, Any]:
-        """Async implementation using the integration framework."""
+        """
+        Fetch weather from cache or provider. Fully async.
+        """
+        cache_key = f"{latitude:.4f}:{longitude:.4f}"
+
+        cached = await cache.get(CACHE_NAMESPACE, cache_key)
+        if cached is not None:
+            return cached
+
         async with IntegrationClient() as client:
-            return await execute_with_retry(
+            raw = await execute_with_retry(
                 operation=lambda: _weather_provider.fetch(
                     client,
                     latitude=latitude,
@@ -182,14 +152,20 @@ class WeatherService:
                 operation_name="fetch_weather",
             )
 
-    async def _ping_async(self) -> Dict[str, Any]:
-        """Async health check using the geocoding provider."""
-        async with IntegrationClient() as client:
-            return await _geocoding_provider.fetch(
-                client,
-                query="London",
-                country_code="",
-            )
+        current = raw.get("current", {})
+        code    = current.get("weather_code", -1)
+
+        result = {
+            "temperature": current.get("temperature_2m"),
+            "feels_like":  current.get("apparent_temperature"),
+            "wind_speed":  current.get("wind_speed_10m"),
+            "condition":   self._translate_code(code),
+            "is_day":      bool(current.get("is_day", 1)),
+        }
+
+        await cache.set(CACHE_NAMESPACE, cache_key, result, WEATHER_TTL)
+
+        return result
 
     @staticmethod
     def _translate_code(code: int) -> str:
@@ -204,17 +180,3 @@ class WeatherService:
             "provider":   "Open-Meteo",
             "timestamp":  datetime.now(timezone.utc).isoformat(),
         }
-
-    @staticmethod
-    def _not_found_error(exc: LocationNotFoundError) -> Dict[str, Any]:
-        result: Dict[str, Any] = {
-            "status":     "error",
-            "error_type": "location_not_found",
-            "message":    f"Location not found: '{exc.query}'",
-            "provider":   "Open-Meteo",
-            "timestamp":  datetime.now(timezone.utc).isoformat(),
-        }
-        if exc.suggestions:
-            result["suggestions"]  = exc.suggestions
-            result["did_you_mean"] = [s["label"] for s in exc.suggestions]
-        return result

@@ -3,18 +3,31 @@ integrations/client.py
 
 Shared async HTTP client for all external integration plugins.
 
+Layer 2 upgrade:
+    The internal httpx.AsyncClient is now sourced from RuntimeHttpClient
+    (runtime/performance/http_client.py) instead of being created per
+    IntegrationClient instance.
+
+    This means every plugin shares:
+        - One connection pool.
+        - HTTP/2 multiplexing.
+        - Centralised timeout and retry defaults.
+
+    The public API of IntegrationClient is completely unchanged.
+    Existing providers require zero modification.
+
 Plugins never import httpx or requests directly.
 All HTTP communication flows through IntegrationClient.
 
 The client handles:
-- GET and POST requests
-- Query parameters and headers
-- JSON parsing
-- Timeout application
-- Exception mapping (raw httpx errors -> IntegrationError subclasses)
+    - GET and POST requests.
+    - Query parameters and headers.
+    - JSON parsing.
+    - Timeout application.
+    - Exception mapping (raw httpx errors -> IntegrationError subclasses).
 
-Retry logic lives in retry.py and wraps this client at the provider
-layer.  The client itself makes exactly one attempt per call.
+Retry logic lives in retry.py and wraps this client at the provider layer.
+The client itself makes exactly one attempt per call.
 
 Usage
 -----
@@ -33,6 +46,8 @@ from typing import Any
 
 import httpx
 
+from backend.runtime.performance.http_client import RuntimeHttpClient
+
 from .exceptions import (
     IntegrationTimeoutError,
     InvalidResponse,
@@ -48,13 +63,16 @@ class IntegrationClient:
     """
     Async HTTP client providing a plugin-friendly interface over httpx.
 
-    Plugins obtain an instance via the async context manager and call
-    get() or post() to communicate with external providers.
+    Layer 2: internally delegates to the shared RuntimeHttpClient rather
+    than creating a new httpx.AsyncClient per instance.
 
-    Example
-    -------
-    async with IntegrationClient(base_headers={"User-Agent": "Tarka/1.0"}) as c:
-        payload = await c.get(url, params={"q": "London"})
+    The context manager API is preserved for backward compatibility.
+    Existing providers using:
+
+        async with IntegrationClient() as client:
+            data = await client.get(url, ...)
+
+    require no changes.
     """
 
     def __init__(
@@ -62,20 +80,20 @@ class IntegrationClient:
         base_headers: dict[str, str] | None = None,
     ) -> None:
         self._base_headers: dict[str, str] = base_headers or {}
-        self._client: httpx.AsyncClient | None = None
 
     # ------------------------------------------------------------------
     # Context manager
     # ------------------------------------------------------------------
 
     async def __aenter__(self) -> "IntegrationClient":
-        self._client = httpx.AsyncClient(headers=self._base_headers)
+        # No client creation needed.
+        # The shared RuntimeHttpClient is already initialised.
         return self
 
     async def __aexit__(self, *_: Any) -> None:
-        if self._client is not None:
-            await self._client.aclose()
-            self._client = None
+        # No teardown needed.
+        # The shared client lifecycle is managed by the lifespan hook.
+        pass
 
     # ------------------------------------------------------------------
     # Public interface
@@ -185,17 +203,21 @@ class IntegrationClient:
         json_body: Any | None,
         timeout: TimeoutPolicy,
     ) -> Any:
-        """Execute one HTTP request and map errors to IntegrationError types."""
-        self._assert_open()
+        """
+        Execute one HTTP request via the shared RuntimeHttpClient
+        and map errors to IntegrationError types.
+        """
+        client = RuntimeHttpClient.get_client()
 
+        merged_headers = {**self._base_headers, **(headers or {})}
         httpx_timeout = httpx.Timeout(**timeout.as_httpx_timeout())
 
         try:
-            response = await self._client.request(  # type: ignore[union-attr]
+            response = await client.request(
                 method=method,
                 url=url,
                 params=params,
-                headers=headers,
+                headers=merged_headers or None,
                 json=json_body,
                 timeout=httpx_timeout,
             )
@@ -228,10 +250,3 @@ class IntegrationClient:
             raise InvalidResponse(
                 message=f"Response from {url} is not valid JSON: {exc}"
             ) from exc
-
-    def _assert_open(self) -> None:
-        if self._client is None:
-            raise RuntimeError(
-                "IntegrationClient must be used as an async context manager. "
-                "Use: async with IntegrationClient() as client: ..."
-            )

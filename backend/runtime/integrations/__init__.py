@@ -3,11 +3,16 @@ runtime/integrations
 
 Reusable framework for all external integration plugins.
 
+Layer 2 note:
+    IntegrationClient now delegates internally to RuntimeHttpClient.
+    The public surface below is completely unchanged.
+    All existing providers and plugins continue to work without modification.
+
 Public surface
 --------------
 Plugins import from this package rather than from individual modules.
 
-    from runtime.integrations import (
+    from backend.runtime.integrations import (
         ExternalProvider,
         IntegrationClient,
         RetryPolicy,

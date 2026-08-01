@@ -4,19 +4,14 @@ plugins/weather/location_resolver.py
 
 LocationResolver - Intelligent location resolution for the Weather Plugin.
 
-Sprint v1.5.2 -> v1.6.0 (Integration Framework Migration)
-
-Changes from v1.5.2:
-    - _geocode() now uses OpenMeteoGeocodingProvider via the
-      integration framework instead of raw httpx calls.
-    - All normalization, scoring, and suggestion logic is unchanged.
-    - Public interface is unchanged.
-    - tool.py requires zero modifications.
+Layer 3 upgrade:
+    resolve() and _geocode() are now fully async.
+    asyncio.run() removed entirely.
+    Cache is handled inside OpenMeteoGeocodingProvider transparently.
 """
 
 import re
 import math
-import asyncio
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -78,11 +73,8 @@ _WEIGHT_ADMIN_HINT    = 20
 _WEIGHT_POPULATION    = 15
 _WEIGHT_FIRST_RESULT  = 5
 
-# Penalty when qualifier is present but candidate does not match it
 _PENALTY_QUALIFIER_MISS = 25
-
-# Minimum confidence to accept a result
-_CONFIDENCE_THRESHOLD = 0.10
+_CONFIDENCE_THRESHOLD   = 0.10
 
 
 # ---------------------------------------------------------------------------
@@ -90,20 +82,6 @@ _CONFIDENCE_THRESHOLD = 0.10
 # ---------------------------------------------------------------------------
 
 class ResolvedLocation:
-    """
-    Returned by LocationResolver.resolve() on success.
-
-    Attributes:
-        city        - Canonical city name from geocoding provider
-        country     - Country name
-        admin       - Administrative region (state / province), may be empty
-        latitude    - WGS84 latitude
-        longitude   - WGS84 longitude
-        confidence  - Score in [0.0, 1.0] indicating match quality
-        provider    - Always "Open-Meteo"
-        timestamp   - ISO 8601 UTC string at resolution time
-    """
-
     def __init__(
         self,
         city:       str,
@@ -136,14 +114,6 @@ class ResolvedLocation:
 
 
 class LocationNotFoundError(Exception):
-    """
-    Raised when no suitable location match is found.
-
-    Attributes:
-        query       - normalized query that was searched
-        suggestions - list of candidate dicts (may be empty)
-    """
-
     def __init__(self, query: str, suggestions: Optional[List[Dict]] = None):
         self.query       = query
         self.suggestions = suggestions or []
@@ -155,7 +125,7 @@ class LocationNetworkError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Provider instance (module-level singleton)
+# Provider instance
 # ---------------------------------------------------------------------------
 
 _geocoding_provider = OpenMeteoGeocodingProvider()
@@ -166,28 +136,10 @@ _geocoding_provider = OpenMeteoGeocodingProvider()
 # ---------------------------------------------------------------------------
 
 class LocationResolver:
-    """
-    Resolves a raw location string into structured geographic metadata.
 
-    Usage:
-        resolver = LocationResolver()
-        result   = resolver.resolve("weather in Delhi, India")
-        # result.city       -> "Delhi"
-        # result.country    -> "India"
-        # result.latitude   -> 28.6519
-        # result.longitude  -> 77.2315
-        # result.confidence -> 0.96
-    """
-
-    def resolve(self, raw_input: str) -> ResolvedLocation:
+    async def resolve(self, raw_input: str) -> ResolvedLocation:
         """
-        Main entry point.
-
-        Args:
-            raw_input - raw string from user or planner
-
-        Returns:
-            ResolvedLocation
+        Main entry point. Now fully async.
 
         Raises:
             LocationNotFoundError  - no match found or confidence too low
@@ -196,27 +148,23 @@ class LocationResolver:
         normalized, qualifier = self._normalize(raw_input)
 
         if not normalized:
-            raise LocationNotFoundError(
-                query="(empty)",
-                suggestions=[],
-            )
+            raise LocationNotFoundError(query="(empty)", suggestions=[])
 
-        # For geocoding API filtering, only pass qualifier if it is a
-        # 2-letter ISO country code. Full words are evaluated at scoring time.
-        api_country_code = qualifier if (qualifier and re.match(r"^[A-Z]{2}$", qualifier)) else ""
+        api_country_code = (
+            qualifier
+            if (qualifier and re.match(r"^[A-Z]{2}$", qualifier))
+            else ""
+        )
 
-        candidates = self._geocode(normalized, api_country_code)
+        candidates = await self._geocode(normalized, api_country_code)
 
         if not candidates:
-            raise LocationNotFoundError(
-                query=normalized,
-                suggestions=[],
-            )
+            raise LocationNotFoundError(query=normalized, suggestions=[])
 
         scored = self._score_candidates(
-            candidates = candidates,
-            query      = normalized,
-            qualifier  = qualifier,
+            candidates=candidates,
+            query=normalized,
+            qualifier=qualifier,
         )
 
         best_score, best = scored[0]
@@ -233,115 +181,82 @@ class LocationResolver:
         if confidence < _CONFIDENCE_THRESHOLD:
             suggestions = self._format_suggestions(scored[:3])
             raise LocationNotFoundError(
-                query       = normalized,
-                suggestions = suggestions,
+                query=normalized,
+                suggestions=suggestions,
             )
 
         return ResolvedLocation(
-            city       = best.get("name", normalized),
-            country    = best.get("country", ""),
-            admin      = best.get("admin1", ""),
-            latitude   = best["latitude"],
-            longitude  = best["longitude"],
-            confidence = confidence,
+            city=best.get("name", normalized),
+            country=best.get("country", ""),
+            admin=best.get("admin1", ""),
+            latitude=best["latitude"],
+            longitude=best["longitude"],
+            confidence=confidence,
         )
 
     # ------------------------------------------------------------------
-    # Private - Normalization (unchanged)
+    # Private - Normalization
     # ------------------------------------------------------------------
 
     def _normalize(self, raw: str) -> Tuple[str, str]:
-        """
-        Cleans raw user input and extracts a single optional qualifier.
-
-        The qualifier is whatever comes after the first comma, or the
-        second token if two tokens remain after filler stripping.
-
-        Returns:
-            (normalized_query, qualifier)
-            qualifier is "" when not present.
-        """
         text = raw.strip()
-
         if not text:
             return ("", "")
 
         qualifier = ""
 
-        # Step 1 - Extract comma-separated qualifier
         parts = [p.strip() for p in text.split(",")]
         if len(parts) >= 2:
             qualifier = parts[-1].strip()
             text      = parts[0].strip()
 
-        # Step 2 - Strip filler words from the location portion
         text = _FILLER_PATTERN.sub(" ", text)
         text = re.sub(r"\s+", " ", text).strip()
 
-        # Step 3 - If two tokens remain and no qualifier yet,
-        # treat second token as qualifier (e.g. "Paris Texas")
         if not qualifier:
             tokens = text.split()
             if len(tokens) == 2:
                 qualifier = tokens[1]
                 text      = tokens[0]
 
-        # Normalize qualifier casing for 2-letter codes
         if qualifier and re.match(r"^[A-Za-z]{2}$", qualifier):
             qualifier = qualifier.upper()
 
         return (text, qualifier)
 
     # ------------------------------------------------------------------
-    # Private - Geocoding (migrated to integration framework)
+    # Private - Geocoding (fully async)
     # ------------------------------------------------------------------
 
-    def _geocode(
+    async def _geocode(
         self,
         query:            str,
         api_country_code: str,
     ) -> List[Dict]:
         """
         Fetches geocoding results via OpenMeteoGeocodingProvider.
-
-        Uses the integration framework for HTTP communication, timeouts,
-        retries, logging, and error mapping.
-
-        Returns list of raw result dicts.
-        Raises LocationNetworkError on connectivity failure.
+        Fully async. No asyncio.run().
+        Cache handled inside the provider transparently.
         """
         try:
-            data = asyncio.run(
-                self._geocode_async(query, api_country_code)
-            )
+            async with IntegrationClient() as client:
+                data = await execute_with_retry(
+                    operation=lambda: _geocoding_provider.fetch(
+                        client,
+                        query=query,
+                        country_code=api_country_code,
+                    ),
+                    policy=_geocoding_provider.retry_policy,
+                    provider=_geocoding_provider.name,
+                    operation_name="geocode",
+                )
         except IntegrationError as exc:
             raise LocationNetworkError(str(exc)) from exc
 
         return data.get("results") or []
 
-    async def _geocode_async(
-        self,
-        query: str,
-        api_country_code: str,
-    ) -> Dict[str, Any]:
-        """
-        Async implementation that uses the integration framework.
-        Called by _geocode() via asyncio.run().
-        """
-        async with IntegrationClient() as client:
-            return await execute_with_retry(
-                operation=lambda: _geocoding_provider.fetch(
-                    client,
-                    query=query,
-                    country_code=api_country_code,
-                ),
-                policy=_geocoding_provider.retry_policy,
-                provider=_geocoding_provider.name,
-                operation_name="geocode",
-            )
-
     # ------------------------------------------------------------------
-    # Private - Scoring (unchanged)
+    # Private - Scoring
     # ------------------------------------------------------------------
 
     def _score_candidates(
@@ -350,10 +265,6 @@ class LocationResolver:
         query:      str,
         qualifier:  str,
     ) -> List[Tuple[float, Dict]]:
-        """
-        Scores each geocoding candidate and returns them sorted
-        descending by score.
-        """
         scored = []
 
         for idx, candidate in enumerate(candidates):
@@ -365,11 +276,9 @@ class LocationResolver:
             candidate_admin   = (candidate.get("admin1")       or "").strip()
             population        = candidate.get("population") or 0
 
-            # Exact name match
             if candidate_name.lower() == query.lower():
                 score += _WEIGHT_EXACT_NAME
 
-            # Qualifier matching
             if qualifier:
                 q_lower = qualifier.lower()
                 q_upper = qualifier.upper()
@@ -390,12 +299,10 @@ class LocationResolver:
                 else:
                     score -= _PENALTY_QUALIFIER_MISS
 
-            # Population bonus (logarithmic scale)
             if population and population > 0:
                 pop_score = min(math.log10(population) / 6.0, 1.0)
                 score += _WEIGHT_POPULATION * pop_score
 
-            # Positional bonus
             if idx == 0:
                 score += _WEIGHT_FIRST_RESULT
 
@@ -405,17 +312,13 @@ class LocationResolver:
         return scored
 
     # ------------------------------------------------------------------
-    # Private - Suggestion formatting (unchanged)
+    # Private - Suggestion formatting
     # ------------------------------------------------------------------
 
     def _format_suggestions(
         self,
         scored: List[Tuple[float, Dict]],
     ) -> List[Dict]:
-        """
-        Formats the top scored candidates into suggestion dicts.
-        Used in LocationNotFoundError for did-you-mean responses.
-        """
         suggestions = []
         for _score, candidate in scored:
             name    = candidate.get("name",    "")

@@ -2,14 +2,13 @@
 agent/tools/registry.py
 Central tool registry.
 
-Sprint 3.16 - Added execute_structured() which returns a dict instead of
-              a plain string. Tools that implement execute_structured()
-              return their native dict. Tools that do not implement it
-              fall back to execute() and wrap the string in {"result": str}.
-              The orchestration layer uses structured results for variable
-              substitution. The original execute() contract is unchanged.
+Layer 3 upgrade:
+    execute() and execute_structured() are now async to support
+    async plugin execution end-to-end.
+    Backward compatible — sync tools are detected and awaited correctly.
 """
 
+import asyncio
 from typing import Any
 
 from backend.utils.logger import get_logger
@@ -65,9 +64,11 @@ class ToolRegistry:
         """Return True if a tool with this name is registered."""
         return name in self._tools
 
-    def execute(self, name: str, **kwargs: Any) -> str:
+    async def execute(self, name: str, **kwargs: Any) -> str:
         """
         Find a tool by name and execute it.
+
+        Supports both sync and async tools transparently.
 
         Returns:
             Tool output as a string.
@@ -80,6 +81,8 @@ class ToolRegistry:
 
         try:
             result = tool.execute(**kwargs)
+            if asyncio.iscoroutine(result):
+                result = await result
         except ToolError:
             raise
         except Exception as exc:
@@ -90,19 +93,16 @@ class ToolRegistry:
         logger.info("Tool '%s' completed successfully", name)
         return result
 
-    def execute_structured(self, name: str, **kwargs: Any) -> dict[str, Any]:
+    async def execute_structured(self, name: str, **kwargs: Any) -> dict[str, Any]:
         """
         Execute a tool and return a structured dict result.
 
-        Sprint 3.16: If the tool implements execute_structured(), call it
-        directly. Otherwise fall back to execute() and wrap the string
-        result in {"result": str, "formatted": str}.
-
-        This keeps backward compatibility — no tool is required to
-        implement execute_structured().
+        Supports both sync and async tools transparently.
+        If the tool implements execute_structured(), call it directly.
+        Otherwise fall back to execute() and wrap the string result.
 
         Returns:
-            Structured dict always. Never raises on missing method.
+            Structured dict always.
 
         Raises:
             ToolError: If the tool is not found or execution fails.
@@ -115,6 +115,8 @@ class ToolRegistry:
         try:
             if hasattr(tool, "execute_structured"):
                 result = tool.execute_structured(**kwargs)
+                if asyncio.iscoroutine(result):
+                    result = await result
                 logger.info(
                     "Tool '%s' returned structured result | keys=%s",
                     name,
@@ -122,11 +124,10 @@ class ToolRegistry:
                 )
                 return result
             else:
-                # Fallback — wrap plain string result
                 raw = tool.execute(**kwargs)
-                logger.info(
-                    "Tool '%s' fallback to string result", name
-                )
+                if asyncio.iscoroutine(raw):
+                    raw = await raw
+                logger.info("Tool '%s' fallback to string result", name)
                 return {"result": raw, "formatted": raw}
 
         except ToolError:

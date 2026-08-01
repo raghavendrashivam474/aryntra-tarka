@@ -2,17 +2,35 @@
 Aryntra Tarka - Application Entry Point
 
 Sprint 3.11 - CORS extended to include Vite dev server (5173).
+Layer 2    - Runtime HTTP client lifecycle managed via startup/shutdown hooks.
 """
+
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api import api_router
-from backend.config.settings import settings
-from backend.utils.logger import get_logger
 from backend.api.version import router as version_router
+from backend.config.settings import settings
+from backend.runtime.performance.http_client import RuntimeHttpClient
+from backend.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Lifespan
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Runtime HTTP client initialising.")
+    RuntimeHttpClient.get_client()
+    yield
+    logger.info("Runtime HTTP client shutting down.")
+    await RuntimeHttpClient.close()
+
 
 # ---------------------------------------------------------------------------
 # Application
@@ -24,6 +42,7 @@ app = FastAPI(
     version=settings.app_version,
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 # ---------------------------------------------------------------------------

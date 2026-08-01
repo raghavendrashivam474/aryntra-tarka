@@ -1,54 +1,82 @@
 ﻿# coding: utf-8
+"""
+runtime/plugins/registry.py
+
+Layer 6 upgrade:
+    PluginRegistry now delegates to PluginManager for lifecycle management.
+    Existing API surface is preserved for backward compatibility.
+"""
+
 import logging
 from typing import Any, Dict, List, Optional
-from backend.runtime.plugins.base import PluginBase
 
-logger = logging.getLogger(__name__)
+from backend.runtime.plugins.base import PluginBase
+from backend.runtime.plugins.manager import PluginManager
+
+log = logging.getLogger(__name__)
 
 
 class ToolRegistry:
     """
-    Central registry for all plugins.
+    Plugin registry — backward-compatible facade over PluginManager.
+
+    Existing callers (bootstrap, tests) continue to work unchanged.
+    Lifecycle management is delegated to PluginManager internally.
     """
 
-    def __init__(self):
-        self._plugins: Dict[str, PluginBase] = {}
-        logger.info("ToolRegistry initialized.")
+    def __init__(self) -> None:
+        self._manager = PluginManager()
+        log.info("ToolRegistry initialised (Layer 6 — PluginManager backed)")
+
+    @property
+    def manager(self) -> PluginManager:
+        """Expose PluginManager for bootstrap and inspection."""
+        return self._manager
 
     def register(self, plugin: PluginBase) -> None:
-        if plugin.name in self._plugins:
-            logger.warning(f"Plugin already registered: {plugin.name}. Overwriting.")
-        self._plugins[plugin.name] = plugin
-        logger.info(f"Plugin registered: {plugin.name} v{plugin.version}")
+        """
+        Register a plugin instance directly.
+
+        Backward-compatible path used by existing bootstrap code.
+        Wraps the instance in a factory for PluginManager.
+        """
+        name    = plugin.name
+        version = plugin.version
+
+        # Wrap existing instance in a factory so PluginManager
+        # can manage it without re-instantiation.
+        instance = plugin
+
+        def factory(inst=instance):
+            return inst
+
+        self._manager.register(
+            name=name,
+            version=version,
+            factory=factory,
+        )
 
     def unregister(self, name: str) -> None:
-        if name in self._plugins:
-            del self._plugins[name]
-            logger.info(f"Plugin unregistered: {name}")
-        else:
-            logger.warning(f"Attempted to unregister unknown plugin: {name}")
+        """Unload and remove a plugin."""
+        self._manager.unload(name)
 
     def find(self, name: str) -> Optional[PluginBase]:
-        return self._plugins.get(name)
+        """Return the plugin instance, loading it if necessary."""
+        return self._manager.get(name)
 
     def list(self) -> List[Dict]:
-        return [
-            {
-                "name":    p.name,
-                "description": p.description,
-                "version": p.version,
-                "healthy": p.health_check(),
-            }
-            for p in self._plugins.values()
-        ]
+        """Return lifecycle metadata for all registered plugins."""
+        return self._manager.list_all()
 
     def execute(self, name: str, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a plugin by name."""
         plugin = self.find(name)
         if plugin is None:
-            raise ValueError(f"Plugin not found: {name}")
-        if not plugin.health_check():
-            raise RuntimeError(f"Plugin health check failed: {name}")
-        logger.info(f"Executing plugin: {name}")
-        result = plugin.execute(input_data)
-        logger.info(f"Plugin execution complete: {name}")
+            raise ValueError(f"Plugin not found or unavailable: {name}")
+        log.info("Executing plugin: %s", name)
+        self._manager.mark_busy(name)
+        try:
+            result = plugin.execute(input_data)
+        finally:
+            self._manager.mark_idle(name)
         return result

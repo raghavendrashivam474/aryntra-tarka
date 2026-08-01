@@ -2,10 +2,14 @@
 """
 runtime/plugins/loader.py
 
-Discovers and loads plugins from the plugins directory.
+Layer 6 upgrade:
+    PluginLoader now registers plugin classes with PluginManager
+    instead of instantiating them directly.
+
+    Instantiation is deferred to first use (lazy loading).
+    The runtime owns all plugin instances via PluginManager.
 """
 
-import importlib
 import importlib.util
 import inspect
 import logging
@@ -13,24 +17,28 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 
 class PluginLoader:
     """
-    Discovers and loads plugins from the plugins directory.
+    Discovers plugin classes from the plugins directory
+    and registers them with PluginManager.
+
+    No plugin instances are created during loading.
     """
 
-    def __init__(self, registry, plugins_dir: str = "plugins"):
-        self.registry    = registry
+    def __init__(self, manager, plugins_dir: str = "plugins"):
+        self._manager    = manager
         self.plugins_dir = Path(plugins_dir)
 
     def load_all(self) -> None:
+        """Scan the plugins directory and register all found plugins."""
         if not self.plugins_dir.exists():
-            logger.warning("Plugins directory not found: %s", self.plugins_dir)
+            log.warning("Plugins directory not found: %s", self.plugins_dir)
             return
 
-        for plugin_folder in self.plugins_dir.iterdir():
+        for plugin_folder in sorted(self.plugins_dir.iterdir()):
             if plugin_folder.is_dir():
                 self._load_plugin(plugin_folder)
 
@@ -38,12 +46,14 @@ class PluginLoader:
         tool_file = folder / "tool.py"
 
         if not tool_file.exists():
-            logger.debug("No tool.py found in %s. Skipping.", folder.name)
+            log.debug("No tool.py in %s. Skipping.", folder.name)
             return
 
         try:
-            module_name = f"plugins.{folder.name}.tool"
-            spec        = importlib.util.spec_from_file_location(module_name, tool_file)
+            module_name = f"backend.plugins.{folder.name}.tool"
+            spec        = importlib.util.spec_from_file_location(
+                module_name, tool_file
+            )
             module      = importlib.util.module_from_spec(spec)
             sys.modules[module_name] = module
             spec.loader.exec_module(module)
@@ -51,43 +61,59 @@ class PluginLoader:
             plugin_class = self._find_plugin_class(module)
 
             if plugin_class is None:
-                logger.warning(
-                    "No PluginBase subclass found in %s. Skipping.", folder.name
+                log.warning(
+                    "No PluginBase subclass found in %s. Skipping.",
+                    folder.name,
                 )
                 return
 
-            plugin_instance = plugin_class()
-            self.registry.register(plugin_instance)
+            # Create a temporary instance only to read name/version
+            # then immediately discard it.
+            # The real instance is created by PluginManager on first use.
+            try:
+                temp = plugin_class()
+                name    = temp.name
+                version = temp.version
+                del temp
+            except Exception as exc:
+                log.error(
+                    "Could not read metadata from %s: %s",
+                    folder.name,
+                    exc,
+                )
+                return
+
+            # Register factory with PluginManager — no instantiation yet
+            self._manager.register(
+                name=name,
+                version=version,
+                factory=plugin_class,
+            )
+
+            log.debug(
+                "Registered factory for '%s' v%s",
+                name,
+                version,
+            )
 
         except Exception as exc:
-            logger.error("Failed to load plugin from %s: %s", folder.name, exc)
+            log.error("Failed to load plugin from %s: %s", folder.name, exc)
 
     def _find_plugin_class(self, module) -> Optional[type]:
         """
         Find a PluginBase subclass in the module.
 
-        Uses name-based duck typing instead of strict issubclass()
-        to avoid false negatives caused by the same file being imported
-        under two different module paths (e.g. runtime.plugins.base vs
-        backend.runtime.plugins.base).
-
-        A class qualifies if:
-          1. It is a class defined in this module.
-          2. It has all four required PluginBase members.
-          3. Its name is not exactly 'PluginBase'.
+        Duck-typed — does not require strict issubclass() to avoid
+        module path mismatches.
         """
         required = {"name", "description", "version", "execute"}
 
         for _, obj in inspect.getmembers(module, inspect.isclass):
             if obj.__name__ == "PluginBase":
                 continue
-
-            # Check it actually lives in this module (not just imported)
             if obj.__module__ != module.__name__:
                 continue
-
-            has_all = all(hasattr(obj, attr) for attr in required)
-            if has_all:
+            if all(hasattr(obj, attr) for attr in required):
                 return obj
 
         return None

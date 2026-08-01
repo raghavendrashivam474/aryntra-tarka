@@ -2,20 +2,21 @@
 """
 agent/tools/plugin_bootstrap.py
 
-Loads all plugins from the plugins/ directory and registers them
-into the agent ToolRegistry via PluginAdapter.
+Layer 6 upgrade:
+    Bootstrap now uses PluginManager-backed PluginLoader.
+    Plugins are registered as factories — not instantiated at startup.
+    Instances are created lazily on first use by PluginManager.
 
-Called once at application startup.
-
-Usage:
-    from backend.agent.tools.plugin_bootstrap import bootstrap_plugins
-    bootstrap_plugins(registry)
+    Existing bootstrap API is completely unchanged.
+    agent_registry.register() still works as before.
 """
+
+from pathlib import Path
 
 from backend.agent.tools.plugin_adapter import PluginAdapter
 from backend.agent.tools.registry import ToolRegistry
 from backend.runtime.plugins.loader import PluginLoader
-from backend.runtime.plugins.registry import ToolRegistry as PluginRegistry
+from backend.runtime.plugins.manager import PluginManager
 from backend.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -26,45 +27,54 @@ def bootstrap_plugins(
     plugins_dir: str = "plugins",
 ) -> int:
     """
-    Discover, load, and register all plugins into the agent ToolRegistry.
+    Discover and register all plugins into the agent ToolRegistry.
 
-    Skips any plugin whose name is already registered.
-    Built-in tools always take priority.
+    Layer 6: plugins are loaded lazily via PluginManager.
+    Instances are created only when first executed.
+
+    Skips any plugin whose name is already registered as a built-in tool.
 
     Returns:
         Number of plugins successfully registered.
     """
-    plugin_registry = PluginRegistry()
+    manager = PluginManager()
+
+    # Resolve plugins directory relative to project root
+    plugins_path = Path("backend") / "plugins"
+    if not plugins_path.exists():
+        plugins_path = Path(plugins_dir)
+
     loader = PluginLoader(
-        registry=plugin_registry,
-        plugins_dir=plugins_dir,
+        manager=manager,
+        plugins_dir=str(plugins_path),
     )
 
-    logger.info("[Bootstrap] Scanning plugins directory: '%s'", plugins_dir)
+    logger.info(
+        "[Bootstrap] Scanning plugins directory: '%s'",
+        plugins_path,
+    )
     loader.load_all()
 
-    plugins    = plugin_registry.list()
     registered = 0
     skipped    = 0
 
-    for meta in plugins:
-        name   = meta["name"]
-        plugin = plugin_registry.find(name)
-
-        if plugin is None:
-            logger.warning("[Bootstrap] Plugin '%s' listed but not found.", name)
-            continue
-
+    for name in manager.names():
+        # Skip if a built-in tool already covers this name
         if agent_registry.has_tool(name):
             logger.info(
-                "[Bootstrap] Skipping plugin '%s' - built-in tool exists.", name
+                "[Bootstrap] Skipping plugin '%s' - built-in tool exists.",
+                name,
             )
             skipped += 1
             continue
 
-        if not meta.get("healthy", True):
+        # Lazily load the plugin instance now for health check
+        plugin = manager.get(name)
+
+        if plugin is None:
             logger.warning(
-                "[Bootstrap] Skipping plugin '%s' - health check failed.", name
+                "[Bootstrap] Skipping plugin '%s' - health check failed.",
+                name,
             )
             skipped += 1
             continue

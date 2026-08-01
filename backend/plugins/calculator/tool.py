@@ -1,5 +1,5 @@
 from typing import Any, Dict
-from runtime.plugins.base import PluginBase
+from backend.runtime.plugins.base import PluginBase
 
 
 class CalculatorPlugin(PluginBase):

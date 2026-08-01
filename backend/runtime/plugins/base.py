@@ -6,6 +6,11 @@ class PluginBase(ABC):
     """
     Every plugin must implement this interface.
     Runtime only speaks to this contract.
+
+    Layer 3 upgrade:
+        execute() is now async.
+        health_check() remains sync — called during bootstrap
+        before the event loop is fully running.
     """
 
     @property
@@ -42,9 +47,9 @@ class PluginBase(ABC):
         return {}
 
     @abstractmethod
-    def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Core execution method.
+        Core execution method. Async.
         Receives input dict.
         Returns output dict.
         """
@@ -52,7 +57,8 @@ class PluginBase(ABC):
 
     def health_check(self) -> bool:
         """
-        Optional health check.
+        Optional health check. Sync.
         Return False if plugin cannot operate.
+        Called during bootstrap — must not use asyncio.run().
         """
         return True

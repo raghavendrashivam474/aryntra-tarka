@@ -1,18 +1,31 @@
-# coding: utf-8
+﻿# coding: utf-8
 """
 plugins/weather/service.py
 
-WeatherService — all Open-Meteo HTTP logic lives here.
+WeatherService - all Open-Meteo weather HTTP logic lives here.
+
+Sprint v1.5.2
 
 The WeatherPlugin never makes HTTP calls directly.
 If Open-Meteo is replaced by another provider in the future,
 only this file changes.
+
+Changes from v1.5.1:
+    - get_weather() now accepts an optional pre-resolved ResolvedLocation.
+    - Location resolution is now the responsibility of LocationResolver.
+    - WeatherService is now a pure weather fetcher.
 """
 
 import httpx
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
+from backend.plugins.weather.location_resolver import (
+    LocationResolver,
+    ResolvedLocation,
+    LocationNotFoundError,
+    LocationNetworkError,
+)
 
 # ---------------------------------------------------------------------------
 # Weather code translation table
@@ -49,64 +62,66 @@ WEATHER_CODES: Dict[int, str] = {
     99: "Thunderstorm with Heavy Hail",
 }
 
-GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
-WEATHER_URL   = "https://api.open-meteo.com/v1/forecast"
-
-# Timeout in seconds for all HTTP calls
+GEOCODING_URL   = "https://geocoding-api.open-meteo.com/v1/search"
+WEATHER_URL     = "https://api.open-meteo.com/v1/forecast"
 REQUEST_TIMEOUT = 10.0
 
 
 class WeatherService:
     """
-    Handles all communication with Open-Meteo.
+    Handles all communication with Open-Meteo weather API.
 
-    Two-step process:
-        1. Geocode city name → (latitude, longitude, country)
-        2. Fetch live weather using those coordinates
+    In v1.5.2, location resolution is handled by LocationResolver before
+    this service is called. WeatherService is now a pure weather fetcher.
     """
 
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
-
-    def get_weather(self, city: str) -> Dict[str, Any]:
+    def get_weather(
+        self,
+        city:     str,
+        resolved: Optional[ResolvedLocation] = None,
+    ) -> Dict[str, Any]:
         """
         Main entry point.
-        Returns a structured weather dict or a structured error dict.
+
+        Args:
+            city     - raw location string (used if resolved is None)
+            resolved - pre-resolved location from LocationResolver
+
+        Returns structured weather dict or structured error dict.
         """
-        try:
-            geo = self._geocode(city)
-        except CityNotFoundError:
-            return self._error(f"City not found: '{city}'", "city_not_found")
-        except NetworkError as exc:
-            return self._error(str(exc), "network_error")
+        if resolved is None:
+            resolver = LocationResolver()
+            try:
+                resolved = resolver.resolve(city)
+            except LocationNotFoundError as exc:
+                return self._not_found_error(exc)
+            except LocationNetworkError as exc:
+                return self._error(str(exc), "network_error")
 
         try:
             weather = self._fetch_weather(
-                latitude=geo["latitude"],
-                longitude=geo["longitude"],
+                latitude  = resolved.latitude,
+                longitude = resolved.longitude,
             )
         except NetworkError as exc:
             return self._error(str(exc), "network_error")
 
         return {
-            "city":        geo["city"],
-            "country":     geo["country"],
+            "city":        resolved.city,
+            "country":     resolved.country,
             "temperature": weather["temperature"],
             "feels_like":  weather["feels_like"],
             "condition":   weather["condition"],
             "wind_speed":  weather["wind_speed"],
             "is_day":      weather["is_day"],
+            "confidence":  resolved.confidence,
             "provider":    "Open-Meteo",
             "timestamp":   datetime.now(timezone.utc).isoformat(),
             "status":      "success",
         }
 
     def ping(self) -> bool:
-        """
-        Health check. Returns True if Open-Meteo geocoding endpoint responds.
-        Used by PluginBase.health_check().
-        """
+        """Health check. Returns True if Open-Meteo geocoding endpoint responds."""
         try:
             with httpx.Client(timeout=5.0) as client:
                 resp = client.get(GEOCODING_URL, params={"name": "London", "count": 1})
@@ -114,106 +129,35 @@ class WeatherService:
         except Exception:
             return False
 
-    # ------------------------------------------------------------------
-    # Private — Geocoding
-    # ------------------------------------------------------------------
-
-    def _geocode(self, city: str) -> Dict[str, Any]:
-        """
-        Resolves a city name to coordinates and country.
-
-        Returns:
-            {
-                "city":      str,
-                "country":   str,
-                "latitude":  float,
-                "longitude": float,
-            }
-
-        Raises:
-            CityNotFoundError — city not recognised by Open-Meteo
-            NetworkError      — HTTP or connectivity failure
-        """
-        params = {
-            "name":     city,
-            "count":    1,
-            "language": "en",
-            "format":   "json",
-        }
-
-        raw = self._get(GEOCODING_URL, params)
-
-        results = raw.get("results")
-        if not results:
-            raise CityNotFoundError(city)
-
-        hit = results[0]
-        return {
-            "city":      hit.get("name", city),
-            "country":   hit.get("country", "Unknown"),
-            "latitude":  hit["latitude"],
-            "longitude": hit["longitude"],
-        }
-
-    # ------------------------------------------------------------------
-    # Private — Weather fetch
-    # ------------------------------------------------------------------
-
     def _fetch_weather(self, latitude: float, longitude: float) -> Dict[str, Any]:
-        """
-        Fetches current weather for the given coordinates.
-
-        Returns:
-            {
-                "temperature": float,   # Celsius
-                "feels_like":  float,   # Celsius
-                "wind_speed":  float,   # km/h
-                "condition":   str,     # human-readable
-                "is_day":      bool,
-            }
-
-        Raises:
-            NetworkError — HTTP or connectivity failure
-        """
         params = {
-            "latitude":                latitude,
-            "longitude":               longitude,
-            "current":                 [
+            "latitude":         latitude,
+            "longitude":        longitude,
+            "current": [
                 "temperature_2m",
                 "apparent_temperature",
                 "wind_speed_10m",
                 "weather_code",
                 "is_day",
             ],
-            "wind_speed_unit":         "kmh",
-            "temperature_unit":        "celsius",
-            "forecast_days":           1,
+            "wind_speed_unit":  "kmh",
+            "temperature_unit": "celsius",
+            "forecast_days":    1,
         }
 
         raw     = self._get(WEATHER_URL, params)
         current = raw.get("current", {})
-
-        weather_code = current.get("weather_code", -1)
+        code    = current.get("weather_code", -1)
 
         return {
             "temperature": current.get("temperature_2m"),
             "feels_like":  current.get("apparent_temperature"),
             "wind_speed":  current.get("wind_speed_10m"),
-            "condition":   self._translate_code(weather_code),
+            "condition":   self._translate_code(code),
             "is_day":      bool(current.get("is_day", 1)),
         }
 
-    # ------------------------------------------------------------------
-    # Private — HTTP helper
-    # ------------------------------------------------------------------
-
     def _get(self, url: str, params: Dict) -> Dict:
-        """
-        Performs a GET request and returns the parsed JSON body.
-
-        Raises:
-            NetworkError — on any connectivity or HTTP error
-        """
         try:
             with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
                 response = client.get(url, params=params)
@@ -222,24 +166,16 @@ class WeatherService:
         except httpx.TimeoutException:
             raise NetworkError(f"Request timed out: {url}")
         except httpx.HTTPStatusError as exc:
-            raise NetworkError(
-                f"HTTP {exc.response.status_code} from {url}"
-            )
+            raise NetworkError(f"HTTP {exc.response.status_code} from {url}")
         except httpx.RequestError as exc:
             raise NetworkError(f"Network failure: {exc}")
 
-    # ------------------------------------------------------------------
-    # Private — Utilities
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _translate_code(code: int) -> str:
-        """Converts a WMO weather code to a human-readable string."""
         return WEATHER_CODES.get(code, f"Unknown condition (code {code})")
 
     @staticmethod
     def _error(message: str, error_type: str) -> Dict[str, Any]:
-        """Produces a structured error response."""
         return {
             "status":     "error",
             "error_type": error_type,
@@ -248,14 +184,20 @@ class WeatherService:
             "timestamp":  datetime.now(timezone.utc).isoformat(),
         }
 
-
-# ---------------------------------------------------------------------------
-# Custom exceptions — internal to the service layer
-# ---------------------------------------------------------------------------
-
-class CityNotFoundError(Exception):
-    """Raised when Open-Meteo geocoding returns no results."""
+    @staticmethod
+    def _not_found_error(exc: LocationNotFoundError) -> Dict[str, Any]:
+        result: Dict[str, Any] = {
+            "status":     "error",
+            "error_type": "location_not_found",
+            "message":    f"Location not found: '{exc.query}'",
+            "provider":   "Open-Meteo",
+            "timestamp":  datetime.now(timezone.utc).isoformat(),
+        }
+        if exc.suggestions:
+            result["suggestions"]  = exc.suggestions
+            result["did_you_mean"] = [s["label"] for s in exc.suggestions]
+        return result
 
 
 class NetworkError(Exception):
-    """Raised on any HTTP or connectivity failure."""
+    """Raised on any HTTP or connectivity failure inside WeatherService."""

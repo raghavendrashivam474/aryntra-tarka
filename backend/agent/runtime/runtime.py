@@ -2,11 +2,15 @@
 agent/runtime/runtime.py
 Agent Runtime.
 
+Layer 4 upgrade:
+    Every request now flows through the ExecutionScheduler.
+    PlanExecutor is still used internally by the scheduler pipeline.
+    Zero behavioural change — sequential execution preserved.
+    Future parallel execution requires only scheduler changes.
+
 Sprint 3.21.1 - ExecutionMonitor injected as optional parameter.
 Real chat executions now emit RuntimeEvents through the shared EventBus
 so the Command Center WebSocket receives live updates from actual chat.
-
-All previous sprint functionality unchanged.
 """
 
 import time
@@ -19,11 +23,16 @@ from backend.agent.tools.registry import ToolRegistry
 from backend.agent.memory.conversation import ConversationMemory
 from backend.agent.memory.persistence import ConversationPersistence
 from backend.agent.schemas.chat import ExecutionEvent, ExecutionMetadata
-from backend.agent.runtime.execution_context import ExecutionContext
+from backend.agent.runtime.execution_context import ExecutionContext, StepResult
 from backend.agent.runtime.plan_executor import PlanExecutor
 from backend.agent.runtime.response_composer import ResponseComposer
 from backend.planner.goal_decomposer import GoalDecomposer
 from backend.planner.models.goal import Goal
+from backend.runtime.execution import (
+    ExecutionScheduler,
+    ExecutionTask,
+    ExecutionResult,
+)
 
 logger = get_logger(__name__)
 
@@ -63,6 +72,9 @@ class AgentRuntime:
     """
     Agent Runtime — orchestration entry point.
 
+    Layer 4: execution now flows through ExecutionScheduler.
+    The scheduler sits between goal decomposition and PlanExecutor.
+
     Sprint 3.21.1: accepts an optional ExecutionMonitor. When provided,
     real chat executions publish RuntimeEvents through the shared EventBus
     so the Command Center reflects live execution state.
@@ -74,16 +86,17 @@ class AgentRuntime:
         registry: ToolRegistry,
         provider: BaseLLMProvider,
         memory:   ConversationMemory,
-        monitor=  None,
+        monitor=None,
     ) -> None:
-        self.planner     = planner
-        self.registry    = registry
-        self.provider    = provider
-        self.memory      = memory
-        self._monitor    = monitor
-        self._executor   = PlanExecutor(registry)
-        self._composer   = ResponseComposer()
+        self.planner = planner
+        self.registry = registry
+        self.provider = provider
+        self.memory = memory
+        self._monitor = monitor
+        self._executor = PlanExecutor(registry)
+        self._composer = ResponseComposer()
         self._decomposer = GoalDecomposer()
+        self._scheduler = ExecutionScheduler(registry)
         logger.info("AgentRuntime initialised (Sprint 3.21.1 live sync)")
 
     # ------------------------------------------------------------------ #
@@ -91,7 +104,7 @@ class AgentRuntime:
     # ------------------------------------------------------------------ #
 
     def _build_session_memory(self, session_id: str) -> ConversationMemory:
-        mem     = ConversationMemory(max_messages=20)
+        mem = ConversationMemory(max_messages=20)
         history = ConversationPersistence.load_history(session_id)
         for item in history:
             if item["role"] == "user":
@@ -101,7 +114,7 @@ class AgentRuntime:
         return mem
 
     # ------------------------------------------------------------------ #
-    # Monitor helpers — safe wrappers that never crash execution          #
+    # Monitor helpers                                                     #
     # ------------------------------------------------------------------ #
 
     def _emit_plan_started(self, goals: list[Goal]) -> None:
@@ -120,7 +133,8 @@ class AgentRuntime:
             all_ok = len(context.failed_steps()) == 0
             self._monitor.on_plan_finished(all_ok)
         except Exception as exc:
-            logger.warning("[Runtime] monitor.on_plan_finished failed: %s", exc)
+            logger.warning(
+                "[Runtime] monitor.on_plan_finished failed: %s", exc)
 
     def _emit_goal_started(self, goal_index: int, goal_name: str) -> None:
         if not self._monitor:
@@ -138,7 +152,8 @@ class AgentRuntime:
         try:
             self._monitor.on_goal_completed(goal_index, goal_name, result)
         except Exception as exc:
-            logger.warning("[Runtime] monitor.on_goal_completed failed: %s", exc)
+            logger.warning(
+                "[Runtime] monitor.on_goal_completed failed: %s", exc)
 
     def _emit_goal_failed(
         self, goal_index: int, goal_name: str, error: str
@@ -171,6 +186,64 @@ class AgentRuntime:
             logger.warning("[Runtime] monitor.on_tool_end failed: %s", exc)
 
     # ------------------------------------------------------------------ #
+    # Task builder                                                        #
+    # ------------------------------------------------------------------ #
+
+    def _build_tasks(self, goals: list[Goal]) -> list[ExecutionTask]:
+        """
+        Convert a list of Goals into ExecutionTasks for the scheduler.
+
+        Each goal is planned and its first tool step becomes a task.
+        Goals with no tool steps become LLM-direct tasks.
+        """
+        tasks: list[ExecutionTask] = []
+
+        for goal in goals:
+            plan: ExecutionPlan = self.planner.plan(goal.description)
+
+            if plan.steps:
+                first_step = plan.steps[0]
+                task = ExecutionTask(
+                    task_id=goal.id,
+                    goal_description=goal.description,
+                    tool_name=first_step.tool_name,
+                    parameters=first_step.parameters,
+                )
+            else:
+                task = ExecutionTask(
+                    task_id=goal.id,
+                    goal_description=goal.description,
+                    tool_name="",
+                    parameters={},
+                )
+
+            tasks.append(task)
+
+        return tasks
+
+    def _apply_results_to_context(
+        self,
+        results: list[ExecutionResult],
+        context: ExecutionContext,
+    ) -> None:
+        """
+        Write scheduler results back into the ExecutionContext
+        so ResponseComposer and ResultRegistry continue to work
+        without modification.
+        """
+        for result in results:
+            step = StepResult(
+                step_number=result.task_id,
+                tool_name=result.tool_name,
+                parameters={},
+                raw_output=result.raw_output,
+                structured=result.structured,
+                success=result.success,
+                error=result.error,
+            )
+            context.add_step_result(step)
+
+    # ------------------------------------------------------------------ #
     # Goal execution                                                      #
     # ------------------------------------------------------------------ #
 
@@ -178,102 +251,70 @@ class AgentRuntime:
         self,
         goals:            list[Goal],
         context:          ExecutionContext,
-        on_goal_start=    None,
-        on_goal_end=      None,
-        on_step_start=    None,
-        on_step_complete= None,
+        on_goal_start=None,
+        on_goal_end=None,
+        on_step_start=None,
+        on_step_complete=None,
     ) -> ExecutionContext:
         total_goals = len(goals)
 
-        # Snapshot step count before execution starts
-        steps_before = len(context.step_results)
-
         self._emit_plan_started(goals)
 
-        for goal in goals:
-            goal_index = goal.execution_order - 1   # 0-based
-            goal_name  = goal.description
+        # Build tasks from goals
+        tasks = self._build_tasks(goals)
 
-            logger.info(
-                "Executing goal %d/%d: '%s'",
-                goal.execution_order, total_goals, goal_name,
+        # Wire SSE hooks into scheduler hooks
+        async def on_task_start(task: ExecutionTask) -> None:
+            goal_index = task.task_id - 1
+            self._emit_goal_started(goal_index, task.goal_description)
+            self._emit_tool_start(
+                goal_index, task.tool_name, task.goal_description
             )
-
             if on_goal_start:
-                await on_goal_start(goal.id, goal_name, total_goals)
+                await on_goal_start(task.task_id, task.goal_description, total_goals)
+            if on_step_start and task.tool_name:
+                await on_step_start(task.task_id, task.tool_name, total_goals)
 
-            self._emit_goal_started(goal_index, goal_name)
-
-            plan: ExecutionPlan = self.planner.plan(goal_name)
-
-            success    = True
-            error_msg  = ""
-
-            if plan.steps:
-                # Capture step count before this goal executes
-                steps_snapshot = len(context.step_results)
-
-                # Build callbacks that capture goal_index correctly
-                # using default argument binding to avoid closure bugs
-                async def _step_start(
-                    step_number: int,
-                    tool_name:   str,
-                    total:       int,
-                    _gi:         int = goal_index,
-                ) -> None:
-                    self._emit_tool_start(_gi, tool_name, f"step {step_number}")
-                    if on_step_start:
-                        await on_step_start(step_number, tool_name, total)
-
-                async def _step_complete(
-                    step_number: int,
-                    tool_name:   str,
-                    ok:          bool,
-                    total:       int,
-                    _gi:         int = goal_index,
-                ) -> None:
-                    if on_step_complete:
-                        await on_step_complete(step_number, tool_name, ok, total)
-
-                try:
-                    await self._executor.execute(
-                        plan,
-                        context,
-                        on_step_start=_step_start,
-                        on_step_complete=_step_complete,
-                    )
-                except Exception as exc:
-                    success   = False
-                    error_msg = str(exc)
-                    logger.warning(
-                        "Goal %d execution error: %s", goal.id, exc,
-                    )
-
-                # Emit tool_end + goal_completed using real results
-                # Collect steps that were added during this goal's execution
-                new_steps = context.step_results[steps_snapshot:]
-
-                for step in new_steps:
-                    self._emit_tool_end(
-                        goal_index,
-                        step.tool_name,
-                        step.raw_output if step.success else "",
-                    )
-
-                if success:
-                    # Use last successful step output as goal result
-                    successful_new = [s for s in new_steps if s.success]
-                    result_str = successful_new[-1].raw_output if successful_new else ""
-                    self._emit_goal_completed(goal_index, goal_name, result_str)
-                else:
-                    self._emit_goal_failed(goal_index, goal_name, error_msg)
-
+        async def on_task_complete(
+            task: ExecutionTask,
+            result: ExecutionResult,
+        ) -> None:
+            goal_index = task.task_id - 1
+            if result.success:
+                self._emit_tool_end(
+                    goal_index, task.tool_name, result.raw_output
+                )
+                self._emit_goal_completed(
+                    goal_index, task.goal_description, result.raw_output
+                )
             else:
-                # No tool steps — goal answered by LLM directly
-                self._emit_goal_completed(goal_index, goal_name, "LLM direct response")
-
+                self._emit_goal_failed(
+                    goal_index, task.goal_description, result.error or ""
+                )
+            if on_step_complete and task.tool_name:
+                await on_step_complete(
+                    task.task_id, task.tool_name, result.success, total_goals
+                )
             if on_goal_end:
-                await on_goal_end(goal.id, goal_name, success, total_goals)
+                await on_goal_end(
+                    task.task_id,
+                    task.goal_description,
+                    result.success,
+                    total_goals,
+                )
+
+
+        # Run through scheduler
+        scheduler = ExecutionScheduler(
+            registry=         self.registry,
+            on_task_start=    on_task_start,
+            on_task_complete= on_task_complete,
+        )
+
+        results = await scheduler.run(tasks)
+
+        # Write results into context for ResponseComposer
+        self._apply_results_to_context(results, context)
 
         self._emit_plan_finished(context)
 

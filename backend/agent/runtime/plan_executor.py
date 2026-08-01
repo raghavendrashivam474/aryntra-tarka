@@ -2,7 +2,9 @@
 agent/runtime/plan_executor.py
 Multi-step plan executor — the orchestration engine.
 
-Sprint 3.16 - New module.
+Layer 3 upgrade:
+    execute_structured() is now awaited.
+    Full async chain is complete end-to-end.
 """
 
 from __future__ import annotations
@@ -47,7 +49,7 @@ class PlanExecutor:
 
         Failure behaviour:
           - Tool not registered  -> record failure, CONTINUE (non-fatal)
-          - ToolError            -> record failure, STOP (may affect downstream)
+          - ToolError            -> record failure, CONTINUE (non-fatal)
           - Unexpected exception -> record failure, STOP
         """
         steps = plan.steps
@@ -93,7 +95,7 @@ class PlanExecutor:
                 if on_step_complete:
                     await on_step_complete(step_number, tool_name, False, total)
 
-                continue  # non-fatal — keep going
+                continue
 
             # ── Resolve variable placeholders ────────────────────────
             resolved_params = self._resolver.resolve_parameters(
@@ -107,7 +109,7 @@ class PlanExecutor:
             # ── Execute ──────────────────────────────────────────────
             t_start = time.monotonic()
             try:
-                structured = self._registry.execute_structured(
+                structured = await self._registry.execute_structured(
                     tool_name, **resolved_params
                 )
                 raw_output = structured.get(
@@ -161,7 +163,7 @@ class PlanExecutor:
                 logger.warning(
                     "[PlanExecutor] Stopping after step %d ToolError", step_number
                 )
-                continue  # Sprint 3.21: ToolError is non-fatal, continue to next step
+                continue
 
             except Exception as exc:
                 elapsed_ms = int((time.monotonic() - t_start) * 1000)
@@ -193,4 +195,3 @@ class PlanExecutor:
             len(context.failed_steps()),
         )
         return context
-

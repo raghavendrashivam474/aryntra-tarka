@@ -1,57 +1,28 @@
 """
 execution_context.py
-====================
-Sprint 3.18/3.19 � Execution Context
-Post-Sprint 3.19 Integration Fix � restored full API surface
 
-The ExecutionContext is a per-request container that holds:
-  - Goal execution results (tool outputs, intermediate values)
-  - Recovery metadata (retry counts, failure reasons, statuses)
-  - Step-level results for ResponseComposer and metadata reporting
-  - Tool result dicts for VariableResolver
-  - Named variables for placeholder substitution
-  - Arbitrary key/value pairs for cross-goal communication
+Layer 5 upgrade:
+    ExecutionContext now embeds SharedContext.
+    All existing API is completely unchanged.
+    New shared_context attribute available to runtime and plugins.
 
-This object is passed through the entire execution pipeline and
-serves as the single source of truth for the current run.
+    shared_context provides:
+        - Namespaced key/value store
+        - Typed entity helpers (location, tool results)
+        - Request metadata
+        - Cross-plugin data sharing within a single request
 
-API surface
------------
-  Constructor
-    ExecutionContext(user_message="")
-
-  Step tracking  (PlanExecutor, ResponseComposer, runtime.py)
-    add_step_result(result: StepResult) -> None
-    successful_steps() -> list[StepResult]
-    failed_steps()     -> list[StepResult]
-    step_results       -> list[StepResult]   (attribute)
-
-  Tool results   (ResultRegistry, VariableResolver)
-    tool_results       -> dict[str, Any]     (attribute)
-
-  Named variables  (VariableResolver, ResultRegistry)
-    set_variable(key, value) -> None
-    get_variable(key)        -> Any | None
-    has_variable(key)        -> bool
-
-  Metadata  (RecoveryEngine � DO NOT CHANGE THESE)
-    set_metadata(key, value) -> None
-    get_metadata(key)        -> Any | None
-    all_metadata()           -> dict[str, Any]
-
-  Goal-level results  (store/retrieve by goal_id)
-    store_result(goal_id, result) -> None
-    get_result(goal_id)           -> Any | None
-    all_results()                 -> dict[str, Any]
-
-  Convenience
-    clear() -> None
+Sprint 3.18/3.19 - Execution Context
+Post-Sprint 3.19 Integration Fix - restored full API surface
 """
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+from backend.runtime.context import SharedContext
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +65,8 @@ class ExecutionContext:
     """
     Per-execution container for results, metadata, and variables.
 
+    Layer 5: Now embeds SharedContext for cross-plugin data sharing.
+
     One instance is created per user request and passed through the
     entire execution pipeline:
 
@@ -104,10 +77,10 @@ class ExecutionContext:
     """
 
     def __init__(self, user_message: str = "") -> None:
-        # The original user message � used by ResponseComposer for prompts.
+        # The original user message - used by ResponseComposer for prompts.
         self.user_message: str = user_message
 
-        # Ordered list of step results � appended by PlanExecutor.
+        # Ordered list of step results - appended by PlanExecutor.
         self.step_results: List[StepResult] = []
 
         # Full structured tool outputs keyed by tool name.
@@ -115,152 +88,88 @@ class ExecutionContext:
         self.tool_results: Dict[str, Any] = {}
 
         # Named variable store for placeholder substitution.
-        # Written by ResultRegistry.set_variable(),
-        # read by VariableResolver.get_variable() / has_variable().
         self._variables: Dict[str, Any] = {}
 
-        # Recovery and execution metadata � keyed by "{goal_id}:{field}".
-        # Written and read exclusively by RecoveryEngine.
+        # Recovery and execution metadata.
         self._metadata: Dict[str, Any] = {}
 
         # Goal-level results keyed by goal_id string.
-        # Written by store_result(), read by get_result().
         self._results: Dict[str, Any] = {}
+
+        # Layer 5 — Shared context for cross-plugin communication.
+        # Created fresh per request. Destroyed with this context object.
+        self.shared: SharedContext = SharedContext(
+            request_id=str(uuid.uuid4()),
+            user_query=user_message,
+        )
 
     # ------------------------------------------------------------------
     # Step tracking API
-    # (PlanExecutor, ResponseComposer, runtime.py)
     # ------------------------------------------------------------------
 
     def add_step_result(self, result: StepResult) -> None:
         """
-        Append a StepResult to the ordered step list.
+        Append a StepResult and sync to shared context.
 
-        Called by PlanExecutor after every step attempt, whether the
-        step succeeded or failed.
-
-        Args:
-            result: Completed StepResult for this step.
+        Successful tool results are automatically published
+        to shared_context.tool_results for downstream plugins.
         """
         self.step_results.append(result)
 
-    def successful_steps(self) -> List[StepResult]:
-        """
-        Return all steps that completed without error, in execution order.
+        # Auto-publish successful tool results to shared context
+        if result.success and result.tool_name:
+            self.shared.add_tool_result(
+                tool_name=result.tool_name,
+                data=result.structured,
+                raw=result.raw_output,
+                success=True,
+            )
 
-        Returns:
-            List of StepResult where success is True.
-        """
+    def successful_steps(self) -> List[StepResult]:
+        """Return all steps that completed without error."""
         return [s for s in self.step_results if s.success]
 
     def failed_steps(self) -> List[StepResult]:
-        """
-        Return all steps that raised an error, in execution order.
-
-        Returns:
-            List of StepResult where success is False.
-        """
+        """Return all steps that raised an error."""
         return [s for s in self.step_results if not s.success]
 
     # ------------------------------------------------------------------
     # Named variable API
-    # (ResultRegistry writes, VariableResolver reads)
     # ------------------------------------------------------------------
 
     def set_variable(self, key: str, value: Any) -> None:
-        """
-        Store a named variable for use in placeholder substitution.
-
-        Args:
-            key:   Variable name (e.g. "CURRENT_HOUR", "LAST_RESULT").
-            value: The value to store.
-        """
         self._variables[key] = value
 
     def get_variable(self, key: str) -> Optional[Any]:
-        """
-        Retrieve a named variable by key.
-
-        Args:
-            key: Variable name previously stored with set_variable().
-
-        Returns:
-            The stored value, or None if not found.
-        """
         return self._variables.get(key)
 
     def has_variable(self, key: str) -> bool:
-        """
-        Check whether a named variable exists.
-
-        Args:
-            key: Variable name to check.
-
-        Returns:
-            True if the variable has been set, False otherwise.
-        """
         return key in self._variables
 
     # ------------------------------------------------------------------
     # Metadata API
-    # (RecoveryEngine � DO NOT CHANGE METHOD SIGNATURES)
     # ------------------------------------------------------------------
 
     def set_metadata(self, key: str, value: Any) -> None:
-        """
-        Store a metadata value under the given key.
-
-        Args:
-            key:   Unique identifier (typically "{goal_id}:{field}").
-            value: Any serializable value.
-        """
         self._metadata[key] = value
 
     def get_metadata(self, key: str) -> Optional[Any]:
-        """
-        Retrieve a previously stored metadata value.
-
-        Args:
-            key: The key used in set_metadata().
-
-        Returns:
-            The stored value, or None if the key does not exist.
-        """
         return self._metadata.get(key)
 
     def all_metadata(self) -> Dict[str, Any]:
-        """Return a shallow copy of all stored metadata."""
         return dict(self._metadata)
 
     # ------------------------------------------------------------------
     # Goal-level results API
-    # (store/retrieve full goal results by goal_id)
     # ------------------------------------------------------------------
 
     def store_result(self, goal_id: str, result: Any) -> None:
-        """
-        Store the execution result for a completed goal.
-
-        Args:
-            goal_id: The unique identifier of the goal.
-            result:  The output produced by executing the goal.
-        """
         self._results[goal_id] = result
 
     def get_result(self, goal_id: str) -> Optional[Any]:
-        """
-        Retrieve the result of a previously executed goal.
-
-        Args:
-            goal_id: The unique identifier of the goal.
-
-        Returns:
-            The stored result, or None if not found.
-        """
         return self._results.get(goal_id)
 
     def all_results(self) -> Dict[str, Any]:
-        """Return a shallow copy of all stored goal results."""
         return dict(self._results)
 
     # ------------------------------------------------------------------
@@ -275,6 +184,7 @@ class ExecutionContext:
         self._metadata.clear()
         self._results.clear()
         self.user_message = ""
+        self.shared = SharedContext()
 
     def __repr__(self) -> str:
         return (
@@ -283,6 +193,5 @@ class ExecutionContext:
             f"steps={len(self.step_results)}, "
             f"successful={len(self.successful_steps())}, "
             f"failed={len(self.failed_steps())}, "
-            f"metadata_keys={list(self._metadata.keys())}, "
-            f"result_keys={list(self._results.keys())})"
+            f"shared={self.shared!r})"
         )

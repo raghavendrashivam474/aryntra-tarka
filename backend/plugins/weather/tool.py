@@ -4,13 +4,10 @@ plugins/weather/tool.py
 
 WeatherPlugin - Aryntra Tarka Plugin SDK.
 
-Sprint v1.5.2
-
-Changes from v1.5.1:
-    - LocationResolver is now called before WeatherService.
-    - tool.py coordinates the two-stage pipeline:
-        raw input -> LocationResolver -> WeatherService -> response
-    - All runtime, planner, registry, and API contracts unchanged.
+Layer 3 upgrade:
+    execute() is now async end-to-end.
+    asyncio.run() removed entirely.
+    Full async chain: tool -> resolver -> service -> provider -> cache.
 """
 
 from typing import Any, Dict
@@ -75,7 +72,7 @@ class WeatherPlugin(PluginBase):
             "status":      "success | error",
         }
 
-    def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         raw_location = input_data.get("location", "").strip()
 
         if not raw_location:
@@ -88,7 +85,7 @@ class WeatherPlugin(PluginBase):
 
         # Stage 1 - Intelligent location resolution
         try:
-            resolved = self._resolver.resolve(raw_location)
+            resolved = await self._resolver.resolve(raw_location)
         except LocationNotFoundError as exc:
             result: Dict[str, Any] = {
                 "status":     "error",
@@ -109,7 +106,7 @@ class WeatherPlugin(PluginBase):
             }
 
         # Stage 2 - Weather fetch using resolved coordinates
-        return self._service.get_weather(
+        return await self._service.get_weather(
             city     = raw_location,
             resolved = resolved,
         )

@@ -5,7 +5,12 @@ agent/tools/plugin_adapter.py
 Bridges the Plugin SDK (runtime/plugins/PluginBase) into the
 existing agent tool system (agent/tools/BaseTool).
 
-No changes required in PlanExecutor, ToolRegistry, or AgentRuntime.
+Layer 3 upgrade:
+    execute() and execute_structured() are now async to match
+    PluginBase.execute() being async end-to-end.
+
+No changes required in PlanExecutor, ToolRegistry, or AgentRuntime
+beyond awaiting execute_structured().
 """
 
 from typing import Any
@@ -41,13 +46,13 @@ class PluginAdapter(BaseTool):
     def description(self) -> str:
         return self._plugin.description
 
-    def execute(self, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> str:
         if not self._plugin.health_check():
             raise ToolError(
                 f"Plugin '{self._plugin.name}' failed health check."
             )
         try:
-            result = self._plugin.execute(input_data=kwargs)
+            result = await self._plugin.execute(input_data=kwargs)
             return self._format_result(result)
         except ToolError:
             raise
@@ -56,13 +61,13 @@ class PluginAdapter(BaseTool):
                 f"Plugin '{self._plugin.name}' raised an error: {exc}"
             ) from exc
 
-    def execute_structured(self, **kwargs: Any) -> dict[str, Any]:
+    async def execute_structured(self, **kwargs: Any) -> dict[str, Any]:
         if not self._plugin.health_check():
             raise ToolError(
                 f"Plugin '{self._plugin.name}' failed health check."
             )
         try:
-            result = self._plugin.execute(input_data=kwargs)
+            result = await self._plugin.execute(input_data=kwargs)
             if "formatted" not in result:
                 result["formatted"] = self._format_result(result)
             logger.info(
